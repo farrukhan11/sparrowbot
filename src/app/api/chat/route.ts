@@ -6,10 +6,14 @@ import { db } from '@/lib/db';
 // ============================================
 const STORE_OWNER_WHATSAPP = '923001234567'; // Your WhatsApp number (92 + number without 0)
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
-const GEMINI_MODEL = 'gemini-2.0-flash';
+const GEMINI_MODEL = 'gemini-3.1-flash-lite';
 
 // In-memory session store for conversation history
 const sessions: Record<string, Array<{role: string; content: string}>> = {};
+// Track terminated sessions — no more API calls allowed
+const terminatedSessions = new Set<string>();
+// Max messages before hard-stopping to save credits
+const MAX_MESSAGES = 20;
 
 function getSystemPrompt(productInfo: {
   productName: string;
@@ -26,18 +30,44 @@ ${productInfo.size ? `- Size: ${productInfo.size}` : ''}
 ${productInfo.price ? `- Price: Rs.${productInfo.price}` : ''}
 
 You must collect these 4 pieces of information:
-1. **Name** - Customer's full name
-2. **Phone Number** - Their contact number (Pakistani format like 03XX-XXXXXXX)
-3. **City** - Delivery city
-4. **Full Address** - Complete delivery address with area/sector details
+1. **Name** - Customer's full name (at least 2 words, only letters and spaces)
+2. **Phone Number** - Pakistani mobile number (must be exactly 11 digits starting with 03, like 0312-3456789 or 03123456789)
+3. **City** - Delivery city (a real Pakistani city name)
+4. **Full Address** - Complete delivery address with area/sector details (at least 10 characters)
 
 **CONVERSATION FLOW:**
 - Start with a warm greeting, mention the product they're ordering
 - Ask questions ONE AT A TIME — don't overwhelm the customer
-- Be conversational and friendly, like a real shopkeeper talking to a customer
-- Use phrases like "Bhai", "Ji", "Sure", "Theek hai", "Shukriya" naturally
+- Always address the customer with respect: use "Aap", "Janab", "Bhai/Behen Ji" — NEVER use casual "tu" or "tum"
+- Use phrases like "Ji bilkul", "Shukriya Janab", "Theek hai Ji", "Zaroor" naturally
 - If they give multiple pieces of info in one message, acknowledge all of them
 - Keep messages short (1-3 sentences max) — this is a chat, not an email
+
+**STRICT VALIDATION RULES — Apply these BEFORE accepting any field:**
+- **Phone Number Validation:** 
+  - MUST be exactly 11 digits
+  - MUST start with "03" (Pakistani mobile numbers)
+  - Remove dashes/spaces when counting digits (e.g., "0312-3456789" = 11 digits ✓)
+  - If the number has fewer than 11 digits, is missing leading zero, or doesn't start with 03, REJECT it and ask again politely
+  - Example: "0334013916" = only 10 digits = INVALID — ask them to re-enter
+  - Example: "03341234567" = 11 digits starting with 03 = VALID ✓
+- **Name Validation:** Must have at least 2 words (first + last name). If only one word, ask for full name.
+- **City Validation:** Must be a recognizable Pakistani city. If unclear, confirm with the customer.
+- **Address Validation:** Must be detailed enough (house/flat number, street, area). If too vague (less than 10 characters), ask for more details.
+
+**HANDLING ABUSE & RUDENESS:**
+- If the customer uses abusive language, insults, or is rude — DO NOT respond with anger or rudeness
+- Politely say something like: "Janab, hum aapki madad karna chahte hain. Meherbani farma kar theek se baat karein."
+- Give them ONE more chance. If they continue being abusive, end the conversation gracefully:
+  Respond with EXACTLY: {"conversation_ended": true, "reason": "abuse"}
+  With a closing message BEFORE the JSON: "Janab, hum aapki service karne mein khushi mahsoos karte, lekin is tarah baat karna mumkin nahi. Allah Hafiz."
+
+**HANDLING OFF-TOPIC / TIME-WASTING:**
+- If the customer repeatedly goes off-topic (asks unrelated questions, chats randomly, ignores the order process), steer them back politely max 2 times
+- After 2 failed redirects, end the conversation:
+  Respond with EXACTLY: {"conversation_ended": true, "reason": "off_topic"}
+  With a closing message BEFORE the JSON: "Janab lagta hai abhi order nahi karna. Jab chahein toh wapas aayen, hum haazir hain! Allah Hafiz."
+- DO NOT entertain general chatting, jokes, or debates — stay focused on the order
 
 **IMPORTANT RULES:**
 - DO NOT ask about size, color, or quantity — those are already selected on the product page
@@ -46,8 +76,8 @@ You must collect these 4 pieces of information:
 - If customer asks about delivery, say: "Cash on delivery available all over Pakistan! Next day delivery within major cities."
 - If customer asks about exchange/return, say: "7 days easy exchange policy hai. Size issue ho toh bata dein, replacement bhej dein ge."
 
-**WHEN ALL 4 FIELDS ARE COLLECTED:**
-Once you have name, phone, city, and address — respond with EXACTLY this JSON format (no markdown, no code blocks, just the raw JSON):
+**WHEN ALL 4 FIELDS ARE COLLECTED AND VALIDATED:**
+Once you have valid name, phone, city, and address — respond with EXACTLY this JSON format (no markdown, no code blocks, just the raw JSON):
 {"order_complete": true, "customer_name": "...", "customer_phone": "...", "customer_city": "...", "customer_address": "..."}
 
 Also add a friendly closing message BEFORE the JSON, like:
@@ -99,10 +129,13 @@ async function callGeminiAPI(messages: Array<{role: string; content: string}>): 
   }
 
   const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        'x-goog-api-key': GEMINI_API_KEY
+      },
       body: JSON.stringify({
         system_instruction: {
           parts: [{ text: systemPrompt }],
@@ -143,18 +176,33 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Block terminated sessions — no credits wasted
+    if (terminatedSessions.has(sessionId)) {
+      return NextResponse.json({
+        reply: 'Is chat session ka waqt khatam ho gaya hai. Dobara order karne ke liye product page par wapas jayen.',
+        orderComplete: false,
+        sessionEnded: true,
+      });
+    }
+
     // Initialize session if needed
     if (!sessions[sessionId]) {
       sessions[sessionId] = [];
     }
 
+    // Hard message limit — terminate session to save credits
+    if (sessions[sessionId].length >= MAX_MESSAGES) {
+      terminatedSessions.add(sessionId);
+      delete sessions[sessionId];
+      return NextResponse.json({
+        reply: 'Janab, bohat der ho gayi hai. Agar order karna ho toh product page se dobara start karein. Shukriya!',
+        orderComplete: false,
+        sessionEnded: true,
+      });
+    }
+
     // Add user message to history
     sessions[sessionId].push({ role: 'user', content: message });
-
-    // Keep only last 20 messages for context window
-    if (sessions[sessionId].length > 20) {
-      sessions[sessionId] = sessions[sessionId].slice(-20);
-    }
 
     // Build messages for LLM
     const systemPrompt = getSystemPrompt(productInfo || {});
@@ -168,6 +216,19 @@ export async function POST(request: NextRequest) {
 
     // Add assistant reply to history
     sessions[sessionId].push({ role: 'assistant', content: aiReply });
+
+    // Check if AI ended conversation (abuse or off-topic)
+    const endedMatch = aiReply.match(/\{"conversation_ended"\s*:\s*true[^}]*\}/);
+    if (endedMatch) {
+      terminatedSessions.add(sessionId);
+      delete sessions[sessionId];
+      const cleanReply = aiReply.replace(/\{"conversation_ended"[^}]*\}/, '').trim();
+      return NextResponse.json({
+        reply: cleanReply,
+        orderComplete: false,
+        sessionEnded: true,
+      });
+    }
 
     // Check if order is complete
     const orderData = parseOrderCompletion(aiReply);
