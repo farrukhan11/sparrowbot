@@ -5,15 +5,32 @@ import { db } from '@/lib/db';
 // CONFIGURATION — Change these before deploying
 // ============================================
 const STORE_OWNER_WHATSAPP = '923001234567'; // Your WhatsApp number (92 + number without 0)
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+// API key rotation — add up to 3 keys for 3x free daily quota (1500 req/day)
+const GEMINI_API_KEYS = [
+  process.env.GEMINI_API_KEY_1 || process.env.GEMINI_API_KEY || '',
+  process.env.GEMINI_API_KEY_2 || '',
+  process.env.GEMINI_API_KEY_3 || '',
+].filter(k => k.trim() !== '');
+
+if (GEMINI_API_KEYS.length === 0) {
+  console.error('No Gemini API keys configured!');
+}
+
+let currentKeyIndex = 0;
+function getNextApiKey(): string {
+  const key = GEMINI_API_KEYS[currentKeyIndex % GEMINI_API_KEYS.length];
+  currentKeyIndex++;
+  return key;
+}
+
 const GEMINI_MODEL = 'gemini-3.1-flash-lite';
 
 // In-memory session store for conversation history
 const sessions: Record<string, Array<{role: string; content: string}>> = {};
 // Track terminated sessions — no more API calls allowed
 const terminatedSessions = new Set<string>();
-// Max messages before hard-stopping to save credits
-const MAX_MESSAGES = 20;
+// Max messages before hard-stopping to save credits (10 = ~10 API calls per chat)
+const MAX_MESSAGES = 10;
 
 function getSystemPrompt(productInfo: {
   productName: string;
@@ -128,13 +145,14 @@ async function callGeminiAPI(messages: Array<{role: string; content: string}>): 
     });
   }
 
+  const apiKey = getNextApiKey();
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
     {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
-        'x-goog-api-key': GEMINI_API_KEY
+        'x-goog-api-key': apiKey
       },
       body: JSON.stringify({
         system_instruction: {
