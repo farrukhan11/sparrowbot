@@ -21,7 +21,7 @@ export type OrderNotificationResult = {
 };
 
 const GRAPH_API_VERSION =
-  process.env.WHATSAPP_GRAPH_API_VERSION?.trim() || 'v23.0';
+  process.env.WHATSAPP_GRAPH_API_VERSION?.trim() || 'v25.0';
 
 function normalizeWhatsAppNumber(value: string | null | undefined): string {
   const digits = (value || '').replace(/\D/g, '');
@@ -147,6 +147,10 @@ async function sendTemplateOrText({
     if (templateResult.sent) return templateResult;
 
     console.error('WhatsApp template message failed:', templateResult.error);
+  } else {
+    console.warn(
+      'No WhatsApp template configured. Falling back to a free-form text message, which requires an open customer service window.'
+    );
   }
 
   return sendText(to, text);
