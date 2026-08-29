@@ -5,24 +5,29 @@ import { db } from '@/lib/db';
 // CONFIGURATION — Change these before deploying
 // ============================================
 const STORE_OWNER_WHATSAPP = '923001234567'; // Your WhatsApp number (92 + number without 0)
-// API key rotation — add up to 3 keys for 3x free daily quota (1500 req/day)
+
+function normalizeApiKey(value?: string): string {
+  let key = (value || '').trim();
+  key = key.replace(/^["']|["']$/g, '');
+  key = key.replace(/^Bearer\s+/i, '');
+  key = key.replace(/^GEMINI_API_KEY(?:_[123])?\s*=\s*/i, '');
+  return key.trim();
+}
+
+// API key rotation + failover — add up to 3 keys
 const GEMINI_API_KEYS = [
   process.env.GEMINI_API_KEY_1 || process.env.GEMINI_API_KEY || '',
   process.env.GEMINI_API_KEY_2 || '',
   process.env.GEMINI_API_KEY_3 || '',
-].filter(k => k.trim() !== '');
+]
+  .map(normalizeApiKey)
+  .filter(Boolean);
 
 if (GEMINI_API_KEYS.length === 0) {
   console.error('No Gemini API keys configured!');
 }
 
 let currentKeyIndex = 0;
-function getNextApiKey(): string {
-  const key = GEMINI_API_KEYS[currentKeyIndex % GEMINI_API_KEYS.length];
-  currentKeyIndex++;
-  return key;
-}
-
 const GEMINI_MODEL = 'gemini-3.1-flash-lite';
 
 // In-memory session store for conversation history
@@ -130,14 +135,10 @@ async function callGeminiAPI(messages: Array<{role: string; content: string}>): 
     throw new Error('No Gemini API keys are configured. Add GEMINI_API_KEY_1, GEMINI_API_KEY_2, or GEMINI_API_KEY_3 to your environment.');
   }
 
-  // Convert our message format to Gemini format
-  // First message is system prompt, rest are user/assistant
   const systemPrompt = messages[0]?.content || '';
   const conversationHistory = messages.slice(1);
-
-  // Build Gemini contents array
   const contents: Array<{role: string; parts: Array<{text: string}>}> = [];
-  
+
   for (const msg of conversationHistory) {
     contents.push({
       role: msg.role === 'assistant' ? 'model' : 'user',
@@ -145,41 +146,64 @@ async function callGeminiAPI(messages: Array<{role: string; content: string}>): 
     });
   }
 
-  const apiKey = getNextApiKey();
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
-    {
-      method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey
-      },
-      body: JSON.stringify({
-        system_instruction: {
-          parts: [{ text: systemPrompt }],
+  const requestBody = JSON.stringify({
+    system_instruction: {
+      parts: [{ text: systemPrompt }],
+    },
+    contents,
+    generationConfig: {
+      temperature: 0.7,
+      maxOutputTokens: 500,
+    },
+  });
+
+  const startIndex = currentKeyIndex % GEMINI_API_KEYS.length;
+  currentKeyIndex = (currentKeyIndex + 1) % GEMINI_API_KEYS.length;
+  const failures: string[] = [];
+
+  for (let attempt = 0; attempt < GEMINI_API_KEYS.length; attempt++) {
+    const keyIndex = (startIndex + attempt) % GEMINI_API_KEYS.length;
+    const apiKey = GEMINI_API_KEYS[keyIndex];
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
         },
-        contents,
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 500,
-        },
-      }),
+        body: requestBody,
+      }
+    );
+
+    if (response.ok) {
+      const data = await response.json();
+      const aiReply = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+      if (!aiReply) {
+        throw new Error('Gemini returned empty response');
+      }
+
+      return aiReply;
     }
-  );
 
-  if (!response.ok) {
     const errorData = await response.text();
-    throw new Error(`Gemini API error (${response.status}): ${errorData}`);
+    failures.push(`key ${keyIndex + 1}: HTTP ${response.status}`);
+    console.error(
+      `Gemini API key ${keyIndex + 1} failed with HTTP ${response.status}:`,
+      errorData.slice(0, 500)
+    );
+
+    // Auth/quota failures can be key-specific, so try the next configured key.
+    if (![401, 403, 429].includes(response.status)) {
+      throw new Error(`Gemini API error (${response.status}): ${errorData}`);
+    }
   }
 
-  const data = await response.json();
-  const aiReply = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
-  if (!aiReply) {
-    throw new Error('Gemini returned empty response');
-  }
-
-  return aiReply;
+  throw new Error(
+    `All configured Gemini API keys failed (${failures.join(', ')}). Regenerate the keys in Google AI Studio and update the Vercel environment variables.`
+  );
 }
 
 export async function POST(request: NextRequest) {
