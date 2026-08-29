@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { callAI, type AIMessage } from '@/lib/ai';
-
-const STORE_OWNER_WHATSAPP =
-  process.env.WHATSAPP_ORDER_RECIPIENT?.replace(/\D/g, '') || '923001234567';
+import { sendOrderWhatsAppNotifications } from '@/lib/whatsapp';
 
 const sessions: Record<string, Array<{ role: 'user' | 'assistant'; content: string }>> = {};
 const terminatedSessions = new Set<string>();
@@ -438,7 +436,11 @@ export async function POST(request: NextRequest) {
         },
       });
 
+      const notifications = await sendOrderWhatsAppNotifications(order);
       const cleanReply = aiReply.replace(/\{[\s\S]*"order_complete"[\s\S]*\}/, '').trim();
+
+      terminatedSessions.add(sessionId);
+      delete sessions[sessionId];
 
       return NextResponse.json({
         reply: cleanReply,
@@ -453,19 +455,8 @@ export async function POST(request: NextRequest) {
           color: order.color,
           size: order.size,
           price: order.price,
-          whatsappLink: `https://wa.me/${STORE_OWNER_WHATSAPP}?text=${encodeURIComponent(
-            `NEW ORDER - Sparrow Official\n\n` +
-              `Product: ${order.productName}\n` +
-              `${order.color ? `Color: ${order.color}\n` : ''}` +
-              `${order.size ? `Size: ${order.size}\n` : ''}` +
-              `${order.price ? `Price: Rs.${order.price}\n` : ''}\n` +
-              `Name: ${order.customerName}\n` +
-              `Phone: ${order.customerPhone}\n` +
-              `City: ${order.customerCity}\n` +
-              `Address: ${order.customerAddress}\n\n` +
-              `Order ID: ${order.id}\n` +
-              `Time: ${new Date().toLocaleString('en-PK')}`
-          )}`,
+          customerWhatsAppSent: notifications.customerSent,
+          ownerWhatsAppSent: notifications.ownerSent,
         },
       });
     }
