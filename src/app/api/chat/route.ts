@@ -126,8 +126,8 @@ function parseOrderCompletion(text: string): Record<string, string> | null {
 }
 
 async function callGeminiAPI(messages: Array<{role: string; content: string}>): Promise<string> {
-  if (!GEMINI_API_KEY) {
-    throw new Error('GEMINI_API_KEY is not set. Add it to your .env file.');
+  if (GEMINI_API_KEYS.length === 0) {
+    throw new Error('No Gemini API keys are configured. Add GEMINI_API_KEY_1, GEMINI_API_KEY_2, or GEMINI_API_KEY_3 to your environment.');
   }
 
   // Convert our message format to Gemini format
