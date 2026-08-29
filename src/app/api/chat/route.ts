@@ -1,34 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { callAI, type AIMessage } from '@/lib/ai';
 
-const STORE_OWNER_WHATSAPP = '923001234567';
+const STORE_OWNER_WHATSAPP =
+  process.env.WHATSAPP_ORDER_RECIPIENT?.replace(/\D/g, '') || '923001234567';
 
-function normalizeApiKey(value?: string): string {
-  let key = (value || '').trim();
-  key = key.replace(/^["']|["']$/g, '');
-  key = key.replace(/^Bearer\s+/i, '');
-  key = key.replace(/^GEMINI_API_KEY(?:_[123])?\s*=\s*/i, '');
-  return key.trim();
-}
-
-const GEMINI_API_KEYS = [
-  process.env.GEMINI_API_KEY_1 || process.env.GEMINI_API_KEY || '',
-  process.env.GEMINI_API_KEY_2 || '',
-  process.env.GEMINI_API_KEY_3 || '',
-]
-  .map(normalizeApiKey)
-  .filter(Boolean);
-
-if (GEMINI_API_KEYS.length === 0) {
-  console.error('No Gemini API keys configured!');
-}
-
-let currentKeyIndex = 0;
-const GEMINI_MODEL = 'gemini-3.1-flash-lite';
-
-const sessions: Record<string, Array<{ role: string; content: string }>> = {};
+const sessions: Record<string, Array<{ role: 'user' | 'assistant'; content: string }>> = {};
 const terminatedSessions = new Set<string>();
-
 const MAX_USER_TURNS = 15;
 
 type OrderDetails = {
@@ -113,6 +91,10 @@ function normalizeCity(value: string): string {
   return normalizeSpaces(value.toLowerCase().replace(/[^a-z\s]/g, ' '));
 }
 
+function normalizePhone(value: string): string {
+  return value.replace(/\D/g, '');
+}
+
 function levenshtein(a: string, b: string): number {
   const previous = Array.from({ length: b.length + 1 }, (_, index) => index);
 
@@ -153,11 +135,7 @@ function getCitySuggestion(value: string): string | null {
 function isValidName(value: string): boolean {
   const name = normalizeSpaces(value);
   const parts = name.split(' ').filter(Boolean);
-  return parts.length >= 2 && /^[\p{L} .'-]+$/u.test(name) && name.length >= 5;
-}
-
-function normalizePhone(value: string): string {
-  return value.replace(/\D/g, '');
+  return parts.length >= 2 && name.length >= 5 && /^[\p{L} .'-]+$/u.test(name);
 }
 
 function isValidPhone(value: string): boolean {
@@ -172,31 +150,25 @@ function isValidCity(value: string): boolean {
 function isValidAddress(value: string): boolean {
   const address = normalizeSpaces(value);
   const words = address.split(' ').filter(Boolean);
-  const hasLetter = /\p{L}/u.test(address);
-  return address.length >= 12 && words.length >= 3 && hasLetter;
+  return address.length >= 12 && words.length >= 3 && /\p{L}/u.test(address);
 }
 
 function isConfirmationPrompt(lastAssistantMessage?: string): boolean {
   if (!lastAssistantMessage) return false;
   const text = lastAssistantMessage.toLowerCase();
-
-  return /confirm|confirmation|hai na|sahi hai|correct|kehna chah|keh rahe|verify kar loon|verify kar lu/.test(text);
+  return /confirm|confirmation|sahi hai|sahi hain|correct|kehna chah|keh rahe|verify kar|details theek|details sahi|sab theek/.test(
+    text
+  );
 }
 
 function detectExpectedField(lastAssistantMessage?: string): ExpectedField {
-  if (!lastAssistantMessage) return null;
-
-  // If the bot is asking the customer to confirm a value it already has,
-  // replies like "yes", "haan" or "ji" are confirmations, not new field values.
-  if (isConfirmationPrompt(lastAssistantMessage)) return null;
+  if (!lastAssistantMessage || isConfirmationPrompt(lastAssistantMessage)) return null;
 
   const text = lastAssistantMessage.toLowerCase();
-
-  if (/address|house|flat|street|mukammal address|poora address/.test(text)) return 'address';
+  if (/address|house|flat|street|mukammal address|poora address|full address/.test(text)) return 'address';
   if (/city|shehar/.test(text)) return 'city';
   if (/phone|mobile|contact number|mobile number|11-digit/.test(text)) return 'phone';
   if (/full name|poora naam|pura naam|naam bata|aapka naam/.test(text)) return 'name';
-
   return null;
 }
 
@@ -204,27 +176,27 @@ function validateExpectedInput(field: ExpectedField, value: string): string | nu
   if (!field) return null;
 
   if (field === 'name' && !isValidName(value)) {
-    return 'Janab, naam verify nahi ho raha. Meherbani karke apna poora naam first name aur last name ke saath likhein.';
+    return 'Janab, naam verify nahi ho raha. Please apna poora naam first aur last name ke saath likhein.';
   }
 
   if (field === 'phone' && !isValidPhone(value)) {
-    return 'Meherbani farma kar sahi Pakistani mobile number dein: exactly 11 digits aur 03 se start hona chahiye, misal 03341234567.';
+    return 'Mobile number sahi nahi lag raha. Please exactly 11 digits ka Pakistani number dein jo 03 se start ho, misal 03341234567.';
   }
 
   if (field === 'city') {
     if (!isValidCity(value)) {
-      return 'City ka naam verify nahi ho raha. Meherbani karke apne shehar ka sahi naam dobara likhein.';
+      return 'City ka naam verify nahi ho raha. Please apne shehar ka sahi naam dobara likhein.';
     }
 
     const suggestion = getCitySuggestion(value);
     if (suggestion) {
       const pretty = suggestion.replace(/\b\w/g, char => char.toUpperCase());
-      return `City ka naam thora unclear hai. Kya aap ${pretty} kehna chah rahe hain? Please exact city name confirm karein.`;
+      return `Kya aap ${pretty} kehna chah rahe hain? Please yes/haan keh kar confirm karein, warna exact city name likhein.`;
     }
   }
 
   if (field === 'address' && !isValidAddress(value)) {
-    return 'Address verify nahi ho raha. Please house/flat number, street/sector aur area ke saath mukammal address likhein.';
+    return 'Address incomplete lag raha hai. Please house/flat number, street/sector aur area ke saath mukammal address likhein.';
   }
 
   return null;
@@ -241,21 +213,21 @@ function validateOrderData(data: OrderDetails):
   if (!isValidName(customerName)) {
     return {
       valid: false,
-      reply: 'Janab, order complete karne se pehle aapka full name verify karna zaroori hai. Please first aur last name dono bhejein.',
+      reply: 'Order complete karne se pehle full name verify karna zaroori hai. Please first aur last name dono bhejein.',
     };
   }
 
   if (!isValidPhone(customerPhone)) {
     return {
       valid: false,
-      reply: 'Aapka mobile number verify nahi hua. Please exactly 11-digit Pakistani number bhejein jo 03 se start ho.',
+      reply: 'Mobile number verify nahi hua. Please exactly 11-digit Pakistani number bhejein jo 03 se start ho.',
     };
   }
 
   if (!isValidCity(customerCity)) {
     return {
       valid: false,
-      reply: 'Aapki city verify nahi ho saki. Please shehar ka sahi naam dobara bhejein.',
+      reply: 'City verify nahi ho saki. Please shehar ka sahi naam dobara bhejein.',
     };
   }
 
@@ -264,14 +236,14 @@ function validateOrderData(data: OrderDetails):
     const pretty = citySuggestion.replace(/\b\w/g, char => char.toUpperCase());
     return {
       valid: false,
-      reply: `City ka naam verify karna hai. Kya aap ${pretty} kehna chah rahe hain? Please exact city name confirm karein.`,
+      reply: `City ka naam unclear hai. Kya aap ${pretty} kehna chah rahe hain? Please confirm karein.`,
     };
   }
 
   if (!isValidAddress(customerAddress)) {
     return {
       valid: false,
-      reply: 'Aapka address incomplete lag raha hai. Please house/flat number, street/sector aur area ke saath mukammal address bhejein.',
+      reply: 'Address incomplete lag raha hai. Please house/flat number, street/sector aur area ke saath mukammal address bhejein.',
     };
   }
 
@@ -287,71 +259,57 @@ function validateOrderData(data: OrderDetails):
 }
 
 function getSystemPrompt(productInfo: {
-  productName: string;
+  productName?: string;
   color?: string;
   size?: string;
   price?: string;
 }): string {
-  return `You are "Sparrow" — a friendly, helpful order assistant for Sparrow Official (sparrowofficial.pk), a Pakistani clothing brand. You speak in a mix of Urdu and English (Roman Urdu) — exactly how Pakistanis casually chat on WhatsApp.
+  return `You are "Sparrow", the friendly order assistant for Sparrow Official, a Pakistani clothing brand. Speak natural Roman Urdu mixed with simple English, like a helpful WhatsApp sales assistant.
 
-Your ONLY job is to collect order information from the customer for this specific product:
+CURRENT PRODUCT:
 - Product: ${productInfo.productName || 'Selected Product'}
 ${productInfo.color ? `- Color: ${productInfo.color}` : ''}
 ${productInfo.size ? `- Size: ${productInfo.size}` : ''}
 ${productInfo.price ? `- Price: Rs.${productInfo.price}` : ''}
 
-You must collect and VERIFY these 4 pieces of information:
-1. **Name** - Customer's full name (at least 2 words, only letters/spaces/common name punctuation)
-2. **Phone Number** - Pakistani mobile number (exactly 11 digits starting with 03)
-3. **City** - A clearly identifiable Pakistani city/town
-4. **Full Address** - Complete delivery address with house/flat, street/sector and area details
+COLLECT THESE 4 DETAILS, ONE AT A TIME:
+1. Full name: at least first + last name
+2. Pakistani mobile number: exactly 11 digits starting with 03
+3. City: clear Pakistani city/town
+4. Full delivery address: house/flat, street/sector and area
 
-**VERY IMPORTANT VERIFICATION BEHAVIOR:**
-- NEVER accept a field just because you can guess what the customer probably meant.
-- Verify EACH field before moving to the next question.
-- If there is a typo, ambiguity, missing digit, incomplete value, or something looks suspicious, ASK FOR CONFIRMATION instead of silently correcting it.
-- Example: if customer writes "karahi", do NOT silently accept it as Karachi. Ask: "Kya aap Karachi kehna chah rahe hain? Please confirm."
-- Example: a 10-digit phone number must be rejected even if it looks close to a valid number.
-- Do not claim "confirm ho gaya" unless the value actually passes the rules.
-- IMPORTANT: when YOU ask a yes/no confirmation about a value you already proposed and the customer replies "yes", "haan", "han", "ji", "bilkul", "correct", "theek hai" or similar, treat the exact value from your previous message as CONFIRMED and continue. Do not ask them to type the full value again.
-- If they answer "no" to a confirmation, ask them for the corrected value.
+VERIFICATION RULES:
+- Never invent, silently repair, or guess customer details.
+- A valid 11-digit 03XXXXXXXXX phone passes verification; do NOT ask the customer to confirm it again. Move to city.
+- A clearly spelled city passes verification; do NOT ask again. If it looks misspelled, ask a yes/no confirmation for your suggested city.
+- If YOU ask a yes/no confirmation and the customer says yes, haan, han, ji, bilkul, correct, theek hai, yup or similar, use the exact value you proposed in your previous message and continue. Do not ask them to type it again.
+- If they say no, ask for the corrected value.
+- After receiving a sufficiently detailed address, show ONE final compact confirmation containing name, phone, city and address, then ask if all details are correct.
+- If the customer confirms that final summary, immediately output order_complete JSON. Do not ask another confirmation.
 
-**CONVERSATION FLOW:**
-- Start with a warm greeting and mention the product they're ordering
-- Ask questions ONE AT A TIME
-- Always address the customer respectfully with "Aap", "Janab", "Bhai/Behen Ji" — NEVER use "tu" or "tum"
-- Use phrases like "Ji bilkul", "Shukriya Janab", "Theek hai Ji", "Zaroor" naturally
-- If they provide multiple valid pieces of information in one message, acknowledge them and only ask for what is still missing
-- Keep messages short (1-3 sentences max)
+STYLE:
+- Ask only one thing at a time.
+- Keep replies short, usually 1-3 sentences.
+- Use respectful language: Aap, Ji, Janab. Never use tu/tum.
+- Do not repeatedly confirm already valid fields.
 
-**STRICT VALIDATION RULES:**
-- Phone: remove spaces/dashes only for checking; final value must be exactly 11 digits and match 03XXXXXXXXX
-- Name: minimum 2 words; if one word only, ask for full name
-- City: must be clearly recognizable. For a likely misspelling or ambiguous city, ask the customer to confirm the exact city name
-- Address: must be detailed enough for delivery; vague area-only addresses are not acceptable
-
-**HANDLING ABUSE & RUDENESS:**
-- Stay polite. Give one warning if abusive.
-- If abuse continues, first write a short closing message and then on the next line output exactly:
+HANDLING ABUSE/OFF-TOPIC:
+- Give one polite warning for abuse. If abuse continues, write a short closing line then on the next line output:
 {"conversation_ended": true, "reason": "abuse"}
-
-**HANDLING OFF-TOPIC / TIME-WASTING:**
-- Redirect back to the order process up to 2 times.
-- If the customer keeps wasting time, first write a short closing message and then on the next line output exactly:
+- Redirect off-topic chat back to ordering up to 2 times. If it continues, write a short closing line then output:
 {"conversation_ended": true, "reason": "off_topic"}
 
-**IMPORTANT RULES:**
-- DO NOT ask about size, color, or quantity — those are already selected on the product page
-- DO NOT discuss other products or redirect to the website
-- DO NOT make up prices or delivery charges
-- If customer asks about delivery, say: "Cash on delivery available all over Pakistan! Next day delivery within major cities."
-- If customer asks about exchange/return, say: "7 days easy exchange policy hai. Size issue ho toh bata dein, replacement bhej dein ge."
+STORE RULES:
+- Do not invent prices, stock, delivery fees, policies or product facts.
+- Do not ask size/color/quantity if already supplied in CURRENT PRODUCT.
+- If asked about delivery, say: "Cash on delivery available all over Pakistan! Next day delivery within major cities."
+- If asked about exchange/return, say: "7 days easy exchange policy hai. Size issue ho toh bata dein, replacement bhej dein ge."
 
-**WHEN ALL 4 FIELDS ARE COLLECTED AND VERIFIED:**
-Only after valid name, phone, city and address, first send a short friendly closing sentence and then on the next line output this raw JSON (no markdown/code block):
+WHEN THE FINAL DETAILS ARE CONFIRMED:
+Write one short friendly closing sentence, then on the NEXT line output exactly one raw JSON object with no markdown/code block:
 {"order_complete": true, "customer_name": "...", "customer_phone": "...", "customer_city": "...", "customer_address": "..."}
 
-Never output order_complete until all four values have actually been verified.`;
+Never output order_complete before all four values are present and the final details have been confirmed.`;
 }
 
 function parseOrderCompletion(text: string): OrderDetails | null {
@@ -360,96 +318,17 @@ function parseOrderCompletion(text: string): OrderDetails | null {
 
   try {
     const parsed = JSON.parse(jsonMatch[0]);
-    if (parsed.order_complete) {
-      return {
-        customerName: parsed.customer_name || '',
-        customerPhone: parsed.customer_phone || '',
-        customerCity: parsed.customer_city || '',
-        customerAddress: parsed.customer_address || '',
-      };
-    }
+    if (!parsed.order_complete) return null;
+
+    return {
+      customerName: parsed.customer_name || '',
+      customerPhone: parsed.customer_phone || '',
+      customerCity: parsed.customer_city || '',
+      customerAddress: parsed.customer_address || '',
+    };
   } catch {
-    // Invalid completion JSON: continue the chat rather than creating an order.
+    return null;
   }
-
-  return null;
-}
-
-async function callGeminiAPI(messages: Array<{ role: string; content: string }>): Promise<string> {
-  if (GEMINI_API_KEYS.length === 0) {
-    throw new Error(
-      'No Gemini API keys are configured. Add GEMINI_API_KEY_1, GEMINI_API_KEY_2, or GEMINI_API_KEY_3 to your environment.'
-    );
-  }
-
-  const systemPrompt = messages[0]?.content || '';
-  const conversationHistory = messages.slice(1);
-  const contents: Array<{ role: string; parts: Array<{ text: string }> }> = [];
-
-  for (const msg of conversationHistory) {
-    contents.push({
-      role: msg.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: msg.content }],
-    });
-  }
-
-  const requestBody = JSON.stringify({
-    system_instruction: {
-      parts: [{ text: systemPrompt }],
-    },
-    contents,
-    generationConfig: {
-      temperature: 0.5,
-      maxOutputTokens: 500,
-    },
-  });
-
-  const startIndex = currentKeyIndex % GEMINI_API_KEYS.length;
-  currentKeyIndex = (currentKeyIndex + 1) % GEMINI_API_KEYS.length;
-  const failures: string[] = [];
-
-  for (let attempt = 0; attempt < GEMINI_API_KEYS.length; attempt++) {
-    const keyIndex = (startIndex + attempt) % GEMINI_API_KEYS.length;
-    const apiKey = GEMINI_API_KEYS[keyIndex];
-
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey,
-        },
-        body: requestBody,
-      }
-    );
-
-    if (response.ok) {
-      const data = await response.json();
-      const aiReply = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
-      if (!aiReply) {
-        throw new Error('Gemini returned empty response');
-      }
-
-      return aiReply;
-    }
-
-    const errorData = await response.text();
-    failures.push(`key ${keyIndex + 1}: HTTP ${response.status}`);
-    console.error(
-      `Gemini API key ${keyIndex + 1} failed with HTTP ${response.status}:`,
-      errorData.slice(0, 500)
-    );
-
-    if (![401, 403, 429].includes(response.status)) {
-      throw new Error(`Gemini API error (${response.status}): ${errorData}`);
-    }
-  }
-
-  throw new Error(
-    `All configured Gemini API keys failed (${failures.join(', ')}). Regenerate the keys in Google AI Studio and update the Vercel environment variables.`
-  );
 }
 
 export async function POST(request: NextRequest) {
@@ -490,6 +369,7 @@ export async function POST(request: NextRequest) {
     const lastAssistantMessage = [...sessions[sessionId]]
       .reverse()
       .find(item => item.role === 'assistant')?.content;
+
     const expectedField = detectExpectedField(lastAssistantMessage);
     const validationReply = validateExpectedInput(expectedField, String(message));
 
@@ -504,13 +384,12 @@ export async function POST(request: NextRequest) {
 
     sessions[sessionId].push({ role: 'user', content: String(message) });
 
-    const systemPrompt = getSystemPrompt(productInfo || {});
-    const llmMessages: Array<{ role: string; content: string }> = [
-      { role: 'system', content: systemPrompt },
+    const llmMessages: AIMessage[] = [
+      { role: 'system', content: getSystemPrompt(productInfo || {}) },
       ...sessions[sessionId],
     ];
 
-    const aiReply = await callGeminiAPI(llmMessages);
+    const aiReply = await callAI(llmMessages);
     sessions[sessionId].push({ role: 'assistant', content: aiReply });
 
     const endedMatch = aiReply.match(/\{"conversation_ended"\s*:\s*true[^}]*\}/);
@@ -579,7 +458,7 @@ export async function POST(request: NextRequest) {
               `Product: ${order.productName}\n` +
               `${order.color ? `Color: ${order.color}\n` : ''}` +
               `${order.size ? `Size: ${order.size}\n` : ''}` +
-              `${order.price ? `Price: Rs.${order.price}\n` : ''}\n\n` +
+              `${order.price ? `Price: Rs.${order.price}\n` : ''}\n` +
               `Name: ${order.customerName}\n` +
               `Phone: ${order.customerPhone}\n` +
               `City: ${order.customerCity}\n` +
