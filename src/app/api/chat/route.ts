@@ -29,8 +29,6 @@ const GEMINI_MODEL = 'gemini-3.1-flash-lite';
 const sessions: Record<string, Array<{ role: string; content: string }>> = {};
 const terminatedSessions = new Set<string>();
 
-// Count CUSTOMER turns only. Previously both user + assistant messages were counted,
-// which made a normal name/phone/city/address flow expire too early.
 const MAX_USER_TURNS = 15;
 
 type OrderDetails = {
@@ -178,8 +176,20 @@ function isValidAddress(value: string): boolean {
   return address.length >= 12 && words.length >= 3 && hasLetter;
 }
 
+function isConfirmationPrompt(lastAssistantMessage?: string): boolean {
+  if (!lastAssistantMessage) return false;
+  const text = lastAssistantMessage.toLowerCase();
+
+  return /confirm|confirmation|hai na|sahi hai|correct|kehna chah|keh rahe|verify kar loon|verify kar lu/.test(text);
+}
+
 function detectExpectedField(lastAssistantMessage?: string): ExpectedField {
   if (!lastAssistantMessage) return null;
+
+  // If the bot is asking the customer to confirm a value it already has,
+  // replies like "yes", "haan" or "ji" are confirmations, not new field values.
+  if (isConfirmationPrompt(lastAssistantMessage)) return null;
+
   const text = lastAssistantMessage.toLowerCase();
 
   if (/address|house|flat|street|mukammal address|poora address/.test(text)) return 'address';
@@ -303,6 +313,8 @@ You must collect and VERIFY these 4 pieces of information:
 - Example: if customer writes "karahi", do NOT silently accept it as Karachi. Ask: "Kya aap Karachi kehna chah rahe hain? Please confirm."
 - Example: a 10-digit phone number must be rejected even if it looks close to a valid number.
 - Do not claim "confirm ho gaya" unless the value actually passes the rules.
+- IMPORTANT: when YOU ask a yes/no confirmation about a value you already proposed and the customer replies "yes", "haan", "han", "ji", "bilkul", "correct", "theek hai" or similar, treat the exact value from your previous message as CONFIRMED and continue. Do not ask them to type the full value again.
+- If they answer "no" to a confirmation, ask them for the corrected value.
 
 **CONVERSATION FLOW:**
 - Start with a warm greeting and mention the product they're ordering
@@ -519,8 +531,6 @@ export async function POST(request: NextRequest) {
       const validatedOrder = validateOrderData(parsedOrderData);
 
       if (!validatedOrder.valid) {
-        // Replace Gemini's invalid completion JSON in history with the corrective
-        // response so the next turn continues naturally instead of thinking the order finished.
         sessions[sessionId][sessions[sessionId].length - 1] = {
           role: 'assistant',
           content: validatedOrder.reply,
