@@ -12,7 +12,21 @@ function normalizeSecret(value?: string): string {
 }
 
 const GROQ_API_KEY = normalizeSecret(process.env.GROQ_API_KEY);
-const GROQ_MODEL = process.env.GROQ_MODEL?.trim() || 'qwen/qwen3.8-27b';
+
+// Both models are available on Groq's free plan. Qwen has the larger daily
+// token allowance; Llama provides a production-model fallback with a much
+// larger requests-per-day allowance. GROQ_MODEL can still override priority.
+const DEFAULT_GROQ_MODELS = [
+  'qwen/qwen3.8-27b',
+  'llama-3.1-8b-instant',
+];
+
+const GROQ_MODELS = [
+  process.env.GROQ_MODEL?.trim(),
+  ...DEFAULT_GROQ_MODELS,
+].filter((model, index, models): model is string =>
+  Boolean(model) && models.indexOf(model) === index
+);
 
 const GEMINI_API_KEYS = [
   process.env.GEMINI_API_KEY_1 || process.env.GEMINI_API_KEY || '',
@@ -25,9 +39,28 @@ const GEMINI_API_KEYS = [
 const GEMINI_MODEL = process.env.GEMINI_MODEL?.trim() || 'gemini-3.1-flash-lite';
 let currentGeminiKeyIndex = 0;
 
-async function callGroq(messages: AIMessage[]): Promise<string> {
-  if (!GROQ_API_KEY) {
-    throw new Error('GROQ_API_KEY is not configured');
+function compactMessages(messages: AIMessage[]): AIMessage[] {
+  const system = messages.find(message => message.role === 'system');
+  const conversation = messages.filter(message => message.role !== 'system');
+
+  // Standard checkout fits inside this window. Keeping only recent turns stops
+  // long/off-topic sessions from repeatedly sending thousands of old tokens.
+  const recentConversation = conversation.slice(-12);
+
+  return system ? [system, ...recentConversation] : recentConversation;
+}
+
+async function callGroqModel(model: string, messages: AIMessage[]): Promise<string> {
+  const requestBody: Record<string, unknown> = {
+    model,
+    messages: compactMessages(messages),
+    temperature: 0.35,
+    max_tokens: 300,
+  };
+
+  // Qwen supports non-thinking mode, which is ideal for short order-chat replies.
+  if (model === 'qwen/qwen3.8-27b') {
+    requestBody.reasoning_effort = 'none';
   }
 
   const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -36,34 +69,55 @@ async function callGroq(messages: AIMessage[]): Promise<string> {
       Authorization: `Bearer ${GROQ_API_KEY}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      model: GROQ_MODEL,
-      messages,
-      temperature: 0.5,
-      max_tokens: 500,
-      reasoning_effort: 'none',
-    }),
+    body: JSON.stringify(requestBody),
   });
 
   const responseText = await response.text();
 
   if (!response.ok) {
-    throw new Error(`Groq API error (${response.status}): ${responseText.slice(0, 1000)}`);
+    throw new Error(`HTTP ${response.status}: ${responseText.slice(0, 700)}`);
   }
 
   let data: any;
   try {
     data = JSON.parse(responseText);
   } catch {
-    throw new Error('Groq returned invalid JSON');
+    throw new Error('invalid JSON response');
   }
 
   const reply = data?.choices?.[0]?.message?.content?.trim();
   if (!reply) {
-    throw new Error('Groq returned an empty response');
+    throw new Error('empty response');
+  }
+
+  const usage = data?.usage;
+  if (usage) {
+    console.log(
+      `Groq ${model} usage: prompt=${usage.prompt_tokens ?? '-'}, completion=${usage.completion_tokens ?? '-'}, total=${usage.total_tokens ?? '-'}`
+    );
   }
 
   return reply;
+}
+
+async function callGroq(messages: AIMessage[]): Promise<string> {
+  if (!GROQ_API_KEY) {
+    throw new Error('GROQ_API_KEY is not configured');
+  }
+
+  const failures: string[] = [];
+
+  for (const model of GROQ_MODELS) {
+    try {
+      return await callGroqModel(model, messages);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      failures.push(`${model}: ${message}`);
+      console.error(`Groq model ${model} failed; trying next free model:`, message);
+    }
+  }
+
+  throw new Error(`All Groq models failed (${failures.join(' | ')})`);
 }
 
 async function callGemini(messages: AIMessage[]): Promise<string> {
@@ -71,8 +125,9 @@ async function callGemini(messages: AIMessage[]): Promise<string> {
     throw new Error('No Gemini fallback API keys are configured');
   }
 
-  const systemPrompt = messages.find(message => message.role === 'system')?.content || '';
-  const conversation = messages
+  const compacted = compactMessages(messages);
+  const systemPrompt = compacted.find(message => message.role === 'system')?.content || '';
+  const conversation = compacted
     .filter(message => message.role !== 'system')
     .map(message => ({
       role: message.role === 'assistant' ? 'model' : 'user',
@@ -85,8 +140,8 @@ async function callGemini(messages: AIMessage[]): Promise<string> {
     },
     contents: conversation,
     generationConfig: {
-      temperature: 0.5,
-      maxOutputTokens: 500,
+      temperature: 0.35,
+      maxOutputTokens: 300,
     },
   });
 
@@ -155,7 +210,7 @@ export async function callAI(messages: AIMessage[]): Promise<string> {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown Groq error';
       providerErrors.push(message);
-      console.error('Groq primary provider failed, trying Gemini fallback:', message);
+      console.error('All Groq free models failed, trying Gemini fallback:', message);
     }
   } else {
     providerErrors.push('GROQ_API_KEY is not configured');
