@@ -13,8 +13,20 @@ GEMINI_API_KEY_1=
 GEMINI_API_KEY_2=
 GEMINI_API_KEY_3=
 
-# WhatsApp
+# WhatsApp Cloud API
 WHATSAPP_ACCESS_TOKEN=
 WHATSAPP_PHONE_NUMBER_ID=
 WHATSAPP_WABA_ID=
-WHATSAPP_ORDER_RECIPIENT=
+WHATSAPP_ORDER_RECIPIENT=923XXXXXXXXX
+WHATSAPP_GRAPH_API_VERSION=v23.0
+
+# Recommended for production business-initiated messages.
+# Customer template body variables, in order:
+# {{1}} customer name, {{2}} order ID, {{3}} product, {{4}} amount
+WHATSAPP_CUSTOMER_TEMPLATE_NAME=
+
+# Owner template body variables, in order:
+# {{1}} order ID, {{2}} product, {{3}} customer name, {{4}} phone,
+# {{5}} city, {{6}} address, {{7}} amount
+WHATSAPP_OWNER_TEMPLATE_NAME=
+WHATSAPP_TEMPLATE_LANGUAGE=en_US
