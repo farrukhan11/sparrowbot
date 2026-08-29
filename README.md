@@ -1,88 +1,54 @@
 # Sparrow Official — AI Order Chatbot
 
-WhatsApp-style AI chatbot that automatically collects customer order details.
-Replaces manual WhatsApp ordering with an AI-powered conversation.
+WhatsApp-style AI chatbot that automatically collects and verifies customer order details.
 
-## Setup on Your Server
+## Setup
 
-### 1. Install Dependencies
+### 1. Install dependencies
 ```bash
 npm install
 ```
 
-### 2. Configure Environment
-```bash
-cp .env.example .env
-# Edit .env and add your Gemini API key
-nano .env
+### 2. Environment variables
+Create `.env` locally and add the same variables in Vercel:
+
+```env
+GROQ_API_KEY=your_groq_key
+MONGODB_URI=mongodb+srv://...
+
+# Optional: only needed if you want to override the database name in the URI
+MONGODB_DB=sparrowbot
+
+# Optional Gemini fallback
+GEMINI_API_KEY_1=...
+GEMINI_API_KEY_2=...
+GEMINI_API_KEY_3=...
 ```
 
-### 3. Setup Database
-```bash
-npx prisma db push
-npx prisma generate
-```
+MongoDB collections are created automatically on first use. No database migration or schema generation command is required.
 
-### 4. Change Your WhatsApp Number
-In `src/app/api/chat/route.ts`, line 10:
-```
-const STORE_OWNER_WHATSAPP = '923001234567';  ← your number here (92 + number without 0)
-```
-
-### 5. Build & Start
+### 3. Build and run
 ```bash
 npm run build
-pm run start
-# OR use PM2:
-pm2 start npm --name "sparrow-order" -- start
-pm2 save
-```
-
-### 6. Nginx Config (order.sparrowofficial.pk)
-```nginx
-server {
-    listen 80;
-    server_name order.sparrowofficial.pk;
-
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_cache_bypass $http_upgrade;
-    }
-}
-```
-
-### 7. HTTPS (Free with Certbot)
-```bash
-sudo certbot --nginx -d order.sparrowofficial.pk
+npm run start
 ```
 
 ## Shopify Setup
 
-Change "Order on WhatsApp" button URL to:
-```
+The current product can be passed to the chatbot using query parameters, for example:
+
+```text
 https://order.sparrowofficial.pk/?product={{product.title}}&color={{variant.title}}&size={{variant.option1}}&price={{variant.price}}
 ```
 
-## Gemini API Key (FREE)
-1. Go to: https://aistudio.google.com/apikey
-2. Login with Google
-3. Click "Create API Key"
-4. Copy and paste in `.env` file
+## AI Provider
 
-## How It Works
-1. Customer clicks "Order on WhatsApp" on Shopify
-2. Lands on AI chatbot page (WhatsApp-style UI)
-3. AI collects: Name, Phone, City, Address (in Roman Urdu)
-4. Order summary shown with all details
-5. Customer clicks "Confirm on WhatsApp"
-6. Store owner receives full order on WhatsApp
+Groq is the primary AI provider. Gemini keys are retained only as optional fallback credentials.
 
-## Cost
-FREE — Uses Google Gemini API (1.5M tokens/day free)
+## Order Flow
+
+1. Customer opens the chatbot from Shopify.
+2. AI collects and validates name, mobile number, city, and delivery address.
+3. The customer confirms the final details.
+4. The order is stored in MongoDB in the `orders` collection.
+5. The order summary is shown to the customer.
