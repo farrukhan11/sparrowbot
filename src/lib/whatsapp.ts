@@ -10,6 +10,9 @@ type WhatsAppOrder = {
   color: string | null;
   size: string | null;
   price: string | null;
+  shippingPrice?: string | null;
+  shippingRateName?: string | null;
+  totalPrice?: string | null;
   customerName: string | null;
   customerPhone: string | null;
   customerCity: string | null;
@@ -76,6 +79,13 @@ function estimatedDeliveryDate(): string {
     year: 'numeric',
     timeZone: 'Asia/Karachi',
   });
+}
+
+function shippingLabel(order: WhatsAppOrder): string {
+  if (order.shippingPrice == null) return 'Not specified';
+  return Number(order.shippingPrice) === 0
+    ? `Free${order.shippingRateName ? ` (${order.shippingRateName})` : ''}`
+    : `Rs.${order.shippingPrice}${order.shippingRateName ? ` (${order.shippingRateName})` : ''}`;
 }
 
 async function postWhatsAppMessage(payload: Record<string, unknown>): Promise<SendResult> {
@@ -192,7 +202,9 @@ export async function sendOrderWhatsAppNotifications(
   );
   const orderId = shortOrderId(order.id);
   const product = productLabel(order);
-  const amount = order.price ? `Rs.${order.price}` : 'Not specified';
+  const productAmount = order.price ? `Rs.${order.price}` : 'Not specified';
+  const shipping = shippingLabel(order);
+  const totalAmount = order.totalPrice ? `Rs.${order.totalPrice}` : productAmount;
 
   const configuredCustomerTemplate =
     process.env.WHATSAPP_CUSTOMER_TEMPLATE_NAME?.trim();
@@ -204,7 +216,9 @@ export async function sendOrderWhatsAppNotifications(
     `Aapka Sparrow Official order confirm ho gaya hai.\n` +
     `Order ID: ${orderId}\n` +
     `Product: ${product}\n` +
-    `${order.price ? `Total: ${amount}\n` : ''}` +
+    `${order.price ? `Product Price: ${productAmount}\n` : ''}` +
+    `${order.shippingPrice != null ? `Shipping: ${shipping}\n` : ''}` +
+    `${order.totalPrice ? `Grand Total: ${totalAmount}\n` : ''}` +
     `Delivery City: ${order.customerCity || '-'}\n\n` +
     `Shukriya for shopping with Sparrow Official!`;
 
@@ -212,7 +226,9 @@ export async function sendOrderWhatsAppNotifications(
     `🛍️ NEW ORDER - Sparrow Official\n\n` +
     `Order ID: ${orderId}\n` +
     `Product: ${product}\n` +
-    `${order.price ? `Amount: ${amount}\n` : ''}` +
+    `${order.price ? `Product Price: ${productAmount}\n` : ''}` +
+    `${order.shippingPrice != null ? `Shipping: ${shipping}\n` : ''}` +
+    `${order.totalPrice ? `Grand Total: ${totalAmount}\n` : ''}` +
     `Customer: ${order.customerName || '-'}\n` +
     `Phone: ${order.customerPhone || '-'}\n` +
     `City: ${order.customerCity || '-'}\n` +
@@ -231,14 +247,14 @@ export async function sendOrderWhatsAppNotifications(
             order.customerName || 'Customer',
             orderId,
             product,
-            amount,
+            totalAmount,
             order.customerCity || '-',
           ]
         : [
             order.customerName || 'Customer',
             orderId,
             product,
-            amount,
+            totalAmount,
           ];
 
   const ownerTemplateParameters = [
@@ -248,7 +264,7 @@ export async function sendOrderWhatsAppNotifications(
     order.customerPhone || '-',
     order.customerCity || '-',
     order.customerAddress || '-',
-    amount,
+    totalAmount,
   ];
 
   const customerPromise: Promise<SendResult> = customerNumber
