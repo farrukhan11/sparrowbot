@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { callAI, type AIMessage } from '@/lib/ai';
 import { sendOrderWhatsAppNotifications } from '@/lib/whatsapp';
+import {
+  getShopifyShippingQuote,
+  type ShippingQuote,
+} from '@/lib/shopify-shipping';
 
 const sessions: Record<string, Array<{ role: 'user' | 'assistant'; content: string }>> = {};
 const MAX_USER_TURNS = 10;
@@ -44,8 +48,25 @@ const PAKISTANI_CITIES = [
   'vehari', 'attock', 'chakwal', 'murree', 'bahawalnagar', 'mandi bahauddin',
   'khushab', 'toba tek singh', 'jacobabad', 'shikarpur', 'khairpur', 'thatta',
   'badin', 'gwadar', 'turbat', 'chaman', 'zhob', 'mansehra', 'haripur',
-  'nowshera', 'kohat', 'bannu',
+  'nowshera', 'kohat', 'bannu', 'swabi', 'charsadda', 'dir', 'chitral',
+  'muzaffarabad', 'mirpur', 'kotli', 'bhimber', 'rawalakot', 'gilgit', 'skardu',
+  'hunza', 'chilas', 'layyah', 'lodhran', 'pakpattan', 'narowal', 'nankana sahib',
+  'wazirabad', 'daska', 'sambrial', 'gojra', 'jampur', 'kabirwala', 'mianwali',
+  'bhakkar', 'chishtian', 'haroonabad', 'hasilpur', 'ahmadpur east', 'kot addu',
+  'shorkot', 'pir mahal', 'arifwala', 'depalpur', 'pattoki', 'kharian', 'lala musa',
+  'dina', 'kallar syedan', 'kahuta', 'hasan abdal', 'hattar', 'hub', 'khuzdar',
+  'loralai', 'sibi', 'dera murad jamali', 'uch', 'matli', 'tando adam',
+  'tando allahyar', 'tando muhammad khan', 'umerkot', 'sanghar', 'dadu',
+  'sehwan', 'moro', 'naushahro feroze', 'kandhkot', 'ghotki', 'rohri', 'pano aqil',
 ];
+
+const CITY_ALIASES: Record<string, string> = {
+  khi: 'karachi',
+  lhr: 'lahore',
+  isb: 'islamabad',
+  rwp: 'rawalpindi',
+  hyd: 'hyderabad',
+};
 
 function normalizeSpaces(value: string): string {
   return String(value || '').trim().replace(/\s+/g, ' ');
@@ -53,6 +74,10 @@ function normalizeSpaces(value: string): string {
 
 function normalizeCity(value: string): string {
   return normalizeSpaces(value.toLowerCase().replace(/[^a-z\s]/g, ' '));
+}
+
+function prettyCity(value: string): string {
+  return value.replace(/\b\w/g, char => char.toUpperCase());
 }
 
 function normalizePhone(value: string): string {
@@ -92,6 +117,7 @@ function levenshtein(a: string, b: string): number {
 function getCitySuggestion(value: string): string | null {
   const city = normalizeCity(value);
   if (!city || PAKISTANI_CITIES.includes(city)) return null;
+  if (CITY_ALIASES[city]) return CITY_ALIASES[city];
 
   let bestCity: string | null = null;
   let bestDistance = Number.POSITIVE_INFINITY;
@@ -111,22 +137,29 @@ function getCitySuggestion(value: string): string | null {
 function isValidName(value: string): boolean {
   const name = normalizeSpaces(value);
   const parts = name.split(' ').filter(Boolean);
-  return parts.length >= 2 && name.length >= 5 && /^[\p{L} .'-]+$/u.test(name);
+  const placeholder = /^(test|testing|abc|user|customer|name|unknown)(\s|$)/i.test(name);
+  return !placeholder && parts.length >= 2 && name.length >= 5 && /^[\p{L} .'-]+$/u.test(name);
 }
 
 function isValidPhone(value: string): boolean {
   return /^03\d{9}$/.test(normalizePhone(value));
 }
 
-function isValidCity(value: string): boolean {
-  const city = normalizeSpaces(value);
-  return city.length >= 2 && city.length <= 50 && /^[\p{L} .'-]+$/u.test(city);
+function isKnownPakistaniCity(value: string): boolean {
+  return PAKISTANI_CITIES.includes(normalizeCity(value));
 }
 
 function isValidAddress(value: string): boolean {
   const address = normalizeSpaces(value);
   const words = address.split(' ').filter(Boolean);
-  return address.length >= 12 && words.length >= 3 && /\p{L}/u.test(address);
+  const placeholder = /^(test|testing|abc|address|unknown)(\s|$)/i.test(address);
+  return (
+    !placeholder &&
+    address.length >= 12 &&
+    words.length >= 3 &&
+    /\p{L}/u.test(address) &&
+    /\d/.test(address)
+  );
 }
 
 function validateDetails(details: Partial<OrderDetails>): {
@@ -143,31 +176,28 @@ function validateDetails(details: Partial<OrderDetails>): {
   const issues: DetailIssue[] = [];
 
   if (!isValidName(data.customerName)) {
-    issues.push({ field: 'customerName', reason: 'Poora naam first aur last name ke saath likhein.' });
+    issues.push({ field: 'customerName', reason: 'Poora aur plausible first + last name likhein.' });
   }
 
   if (!isValidPhone(data.customerPhone)) {
     issues.push({ field: 'customerPhone', reason: '11-digit Pakistani mobile number dein jo 03 se start ho.' });
   }
 
-  if (!isValidCity(data.customerCity)) {
-    issues.push({ field: 'customerCity', reason: 'City ka sahi naam likhein.' });
-  } else {
+  if (!isKnownPakistaniCity(data.customerCity)) {
     const suggestion = getCitySuggestion(data.customerCity);
-    if (suggestion) {
-      const pretty = suggestion.replace(/\b\w/g, char => char.toUpperCase());
-      issues.push({
-        field: 'customerCity',
-        reason: `City ka naam unclear lag raha hai. Kya aap ${pretty} kehna chah rahe hain?`,
-        suggestion: pretty,
-      });
-    }
+    issues.push({
+      field: 'customerCity',
+      reason: suggestion
+        ? `City ka naam verify nahi hua. Kya aap ${prettyCity(suggestion)} kehna chah rahe hain?`
+        : 'Sirf actual Pakistani city/town ka naam likhein, area/locality nahi (misal: Karachi, Lahore, Islamabad).',
+      suggestion: suggestion ? prettyCity(suggestion) : undefined,
+    });
   }
 
   if (!isValidAddress(data.customerAddress)) {
     issues.push({
       field: 'customerAddress',
-      reason: 'House/flat number, street/sector aur area ke saath mukammal address likhein.',
+      reason: 'House/flat/building number aur street/sector/area ke saath mukammal deliverable address likhein.',
     });
   }
 
@@ -191,13 +221,13 @@ async function auditDetailsWithAI(details: OrderDetails): Promise<DetailIssue[]>
   const messages: AIMessage[] = [
     {
       role: 'system',
-      content: `You audit Pakistani ecommerce delivery details. Return JSON only, no markdown.
-Do not invent or silently repair any customer value. If anything looks doubtful, mark it as an issue so the customer can correct it.
-Check all four fields:
-- customerName: plausible full human name, normally first + last name, no digits.
-- customerPhone: exactly 11 digits and starts with 03.
-- customerCity: plausible Pakistani city/town. Treat obvious misspellings as doubtful and give a suggestion.
-- customerAddress: realistically deliverable Pakistani address. Accept common formats such as R-57 Sector 15A/4 Buffer Zone; postal code is NOT required. It should contain a house/flat/building identifier plus locality/street/sector/area information.
+      content: `You strictly audit Pakistani ecommerce delivery details. Return JSON only, no markdown.
+Independently check EVERY field. Do not invent, silently repair, or assume any customer value. If a field is not clearly plausible, mark it as an issue.
+- customerName: plausible full human name, normally first + last name, no digits, no placeholders such as test/user/abc.
+- customerPhone: exactly 11 digits and starts with 03. Only validate format; do not claim ownership verification.
+- customerCity: MUST be an actual Pakistani city/town. A neighborhood, society, locality, sector or area is NOT a city. Examples that must be rejected as city values: Buffer Zone, Gulshan-e-Iqbal, DHA, Clifton, Bahria Town, North Nazimabad. If the locality strongly implies a city, suggest the city instead.
+- customerAddress: realistically deliverable Pakistani address with a house/flat/building identifier and locality/street/sector/area. Postal code is not required. City does not have to be repeated inside the address.
+Also cross-check the fields together for obvious contradictions.
 Reasons and suggestions must be short Roman Urdu.
 Output exactly:
 {"valid":true,"issues":[]}
@@ -251,21 +281,43 @@ ${productInfo.size ? `Size: ${productInfo.size}` : ''}
 ${productInfo.price ? `Price: Rs.${productInfo.price}` : ''}
 
 The website has a separate product-options and delivery-details form. Do NOT collect name, phone, city or address one-by-one in chat. If the customer wants to order, tell them to use the form shown in the chat.
-Do not invent product facts, stock, price, fees or policies.
+Do not invent product facts, stock, price, shipping fees or policies. Shipping is calculated live from Shopify after the delivery details are verified.
 Payment: Cash on Delivery and advance payment are both available.
 Delivery policy: delivery is available across Pakistan; next-day delivery is available in major cities where applicable.
 Exchange policy: 7 days easy exchange for size issues.
 Keep answers short, usually 1-3 sentences.`;
 }
 
+function shippingLabel(pricing: ShippingQuote): string {
+  return Number(pricing.shippingPrice) === 0
+    ? `Free (${pricing.shippingRateName})`
+    : `Rs.${pricing.shippingPrice} (${pricing.shippingRateName})`;
+}
+
+async function calculatePricing(productInfo: any, details: OrderDetails): Promise<ShippingQuote> {
+  return getShopifyShippingQuote(
+    {
+      variantId: productInfo?.variantId,
+      productUrl: productInfo?.productUrl,
+      price: productInfo?.price,
+    },
+    {
+      city: details.customerCity,
+      address1: details.customerAddress,
+    }
+  );
+}
+
 async function saveOrder({
   sessionId,
   productInfo,
   details,
+  pricing,
 }: {
   sessionId: string;
   productInfo: any;
   details: OrderDetails;
+  pricing: ShippingQuote;
 }) {
   const chatHistory = sessions[sessionId] || [];
   const productOptions = normalizeProductOptions(productInfo?.selectedOptions);
@@ -284,7 +336,10 @@ async function saveOrder({
       productOptions,
       color,
       size,
-      price: productInfo?.price ? String(productInfo.price).slice(0, 50) : null,
+      price: pricing.productPrice,
+      shippingPrice: pricing.shippingPrice,
+      shippingRateName: pricing.shippingRateName,
+      totalPrice: pricing.totalPrice,
       customerName: details.customerName,
       customerPhone: details.customerPhone,
       customerCity: details.customerCity,
@@ -308,6 +363,9 @@ async function saveOrder({
     color: order.color,
     size: order.size,
     price: order.price,
+    shippingPrice: order.shippingPrice,
+    shippingRateName: order.shippingRateName,
+    totalPrice: order.totalPrice,
     customerWhatsAppSent: notifications.customerSent,
     ownerWhatsAppSent: notifications.ownerSent,
   };
@@ -327,7 +385,7 @@ export async function POST(request: NextRequest) {
 
       if (validation.issues.length > 0) {
         return NextResponse.json({
-          reply: 'Kuch details ko dobara check karna hai. Neeche highlighted fields correct kar dein.',
+          reply: 'Har detail verify ki ja rahi hai. Kuch fields valid nahi hain; highlighted fields correct kar dein.',
           orderComplete: false,
           needsCorrection: true,
           issues: validation.issues,
@@ -347,11 +405,31 @@ export async function POST(request: NextRequest) {
         });
       }
 
+      let pricing: ShippingQuote;
+      try {
+        pricing = await calculatePricing(productInfo || {}, validation.data);
+      } catch (error) {
+        console.error('Shopify shipping calculation failed:', error);
+        return NextResponse.json({
+          reply: 'Delivery details valid hain lekin Shopify se is city/address ki shipping rate confirm nahi hui. City/address dobara check karein.',
+          orderComplete: false,
+          needsCorrection: true,
+          issues: [
+            {
+              field: 'customerCity',
+              reason: 'Is city/address ke liye live Shopify shipping rate confirm nahi hui. City ka actual naam dobara check karein.',
+            },
+          ],
+          details: validation.data,
+        });
+      }
+
       return NextResponse.json({
-        reply: 'Details verify ho gayi hain. Neeche summary check karke order confirm kar dein.',
+        reply: `Sab details verify ho gayi hain. Product: Rs.${pricing.productPrice} • Shipping: ${shippingLabel(pricing)} • Total: Rs.${pricing.totalPrice}. Neeche summary check karke order confirm kar dein.`,
         orderComplete: false,
         detailsVerified: true,
         details: validation.data,
+        pricing,
       });
     }
 
@@ -368,16 +446,48 @@ export async function POST(request: NextRequest) {
         });
       }
 
+      const aiIssues = await auditDetailsWithAI(validation.data);
+      if (aiIssues.length > 0) {
+        return NextResponse.json({
+          reply: 'Final verification mein kuch details doubtful hain. Highlighted fields correct kar dein.',
+          orderComplete: false,
+          needsCorrection: true,
+          issues: aiIssues,
+          details: validation.data,
+        });
+      }
+
+      let pricing: ShippingQuote;
+      try {
+        pricing = await calculatePricing(productInfo || {}, validation.data);
+      } catch (error) {
+        console.error('Final Shopify shipping calculation failed:', error);
+        return NextResponse.json({
+          reply: 'Order confirm karne se pehle live shipping rate verify nahi ho saki. City/address dobara check karein.',
+          orderComplete: false,
+          needsCorrection: true,
+          issues: [
+            {
+              field: 'customerCity',
+              reason: 'Live Shopify shipping rate verify nahi hui. City/address dobara check karein.',
+            },
+          ],
+          details: validation.data,
+        });
+      }
+
       const order = await saveOrder({
         sessionId,
         productInfo: productInfo || {},
         details: validation.data,
+        pricing,
       });
 
       return NextResponse.json({
-        reply: 'Shukriya! Aapka order successfully confirm ho gaya hai.',
+        reply: `Shukriya! Aapka order successfully confirm ho gaya hai. Final total Rs.${pricing.totalPrice} hai.`,
         orderComplete: true,
         order,
+        pricing,
       });
     }
 
