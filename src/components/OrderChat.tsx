@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   Send,
   ShoppingBag,
@@ -12,6 +12,7 @@ import {
   Loader2,
   ShieldCheck,
   Pencil,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
@@ -24,11 +25,29 @@ interface Message {
   time: string;
 }
 
+interface ProductOptionDefinition {
+  name: string;
+  values: string[];
+}
+
+interface SelectedProductOption {
+  name: string;
+  value: string;
+}
+
 interface ProductInfo {
   productName: string;
   color?: string;
   size?: string;
   price?: string;
+  productId?: string;
+  productHandle?: string;
+  variantId?: string;
+  productUrl?: string;
+  image?: string;
+  available?: boolean;
+  options?: ProductOptionDefinition[];
+  selectedOptions?: SelectedProductOption[];
 }
 
 interface CustomerDetails {
@@ -52,6 +71,7 @@ interface OrderData extends CustomerDetails {
   color: string | null;
   size: string | null;
   price: string | null;
+  productOptions?: SelectedProductOption[] | null;
   customerWhatsAppSent?: boolean;
   ownerWhatsAppSent?: boolean;
 }
@@ -98,6 +118,19 @@ function DetailRow({ label, value, icon }: { label: string; value: string; icon:
   );
 }
 
+function buildInitialOptionValues(productInfo: ProductInfo): Record<string, string> {
+  const result: Record<string, string> = {};
+
+  for (const definition of productInfo.options || []) {
+    const selected = productInfo.selectedOptions?.find(
+      option => option.name.toLowerCase() === definition.name.toLowerCase()
+    );
+    result[definition.name] = selected?.value || (definition.values.length === 1 ? definition.values[0] : '');
+  }
+
+  return result;
+}
+
 export default function OrderChat({ productInfo, sessionId }: { productInfo: ProductInfo; sessionId: string }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -111,6 +144,10 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
   const [showDetailsForm, setShowDetailsForm] = useState(false);
   const [verifiedDetails, setVerifiedDetails] = useState<CustomerDetails | null>(null);
   const [awaitingConfirmation, setAwaitingConfirmation] = useState(false);
+  const [productOptionValues, setProductOptionValues] = useState<Record<string, string>>(() =>
+    buildInitialOptionValues(productInfo)
+  );
+  const [productOptionError, setProductOptionError] = useState('');
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -119,6 +156,37 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
   const cityRef = useRef<HTMLInputElement>(null);
   const addressRef = useRef<HTMLTextAreaElement>(null);
   const { toast } = useToast();
+
+  const selectedProductOptions = useMemo<SelectedProductOption[]>(() => {
+    return (productInfo.options || [])
+      .map(definition => ({
+        name: definition.name,
+        value: productOptionValues[definition.name] || '',
+      }))
+      .filter(option => option.value);
+  }, [productInfo.options, productOptionValues]);
+
+  const resolvedProductInfo = useMemo<ProductInfo>(() => {
+    const color = selectedProductOptions.find(option => /colou?r/i.test(option.name))?.value;
+    const size = selectedProductOptions.find(option => /size/i.test(option.name))?.value;
+
+    const originalMap = new Map(
+      (productInfo.selectedOptions || []).map(option => [option.name.toLowerCase(), option.value])
+    );
+    const optionSelectionChanged = selectedProductOptions.some(
+      option => originalMap.get(option.name.toLowerCase()) !== option.value
+    );
+
+    return {
+      ...productInfo,
+      color: color || productInfo.color,
+      size: size || productInfo.size,
+      selectedOptions: selectedProductOptions,
+      // A Shopify variant id is only trustworthy while the exact options selected
+      // on the product page remain unchanged in Sparrowbot.
+      variantId: optionSelectionChanged ? undefined : productInfo.variantId,
+    };
+  }, [productInfo, selectedProductOptions]);
 
   const appendMessage = useCallback((text: string, sender: 'user' | 'bot') => {
     setMessages(prev => [
@@ -140,8 +208,8 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
     scrollToBottom();
   }, [messages, showDetailsForm, awaitingConfirmation, scrollToBottom]);
 
-  // Focus only after React has re-rendered the enabled field. The old code tried
-  // to focus while the input was still disabled during loading, so focus failed.
+  // Focus after React enables/re-renders the input so the customer never needs
+  // to click the field again after a bot response.
   useEffect(() => {
     if (!isStarted || isLoading || showOrderSummary) return;
 
@@ -178,7 +246,7 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
         body: JSON.stringify({
           message: trimmed,
           sessionId,
-          productInfo,
+          productInfo: resolvedProductInfo,
         }),
       });
 
@@ -196,7 +264,7 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
     } finally {
       setIsLoading(false);
     }
-  }, [appendMessage, isLoading, productInfo, sessionId, toast]);
+  }, [appendMessage, isLoading, resolvedProductInfo, sessionId, toast]);
 
   const handleStart = () => {
     setIsStarted(true);
@@ -206,7 +274,7 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
         id: `bot-${Date.now()}`,
         sender: 'bot',
         time: getTimeString(),
-        text: `Assalam o Alaikum! ${productInfo.productName} order karne ke liye neeche apni 4 delivery details ek hi dafa fill kar dein. Main sab details verify karke sirf agar koi cheez doubtful hui to aap se correct karwaunga.`,
+        text: `Assalam o Alaikum! ${productInfo.productName} order karne ke liye product options aur apni delivery details neeche confirm/fill kar dein. AI delivery details ko ek hi dafa verify karega aur sirf doubtful cheez dobara poochega.`,
       },
     ]);
   };
@@ -217,10 +285,29 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
     setVerifiedDetails(null);
   };
 
+  const updateProductOption = (name: string, value: string) => {
+    setProductOptionValues(prev => ({ ...prev, [name]: value }));
+    setProductOptionError('');
+    setVerifiedDetails(null);
+  };
+
   const issueFor = (field: DetailField) => issues.find(issue => issue.field === field);
 
+  const validateProductOptions = (): boolean => {
+    const missing = (productInfo.options || []).find(
+      definition => !String(productOptionValues[definition.name] || '').trim()
+    );
+
+    if (!missing) return true;
+
+    const message = `Please ${missing.name} select karein.`;
+    setProductOptionError(message);
+    toast({ title: 'Product option required', description: message, variant: 'destructive' });
+    return false;
+  };
+
   const submitDetails = async () => {
-    if (isLoading) return;
+    if (isLoading || !validateProductOptions()) return;
     setIsLoading(true);
     setIssues([]);
 
@@ -231,7 +318,7 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
         body: JSON.stringify({
           action: 'verify_details',
           sessionId,
-          productInfo,
+          productInfo: resolvedProductInfo,
           details,
         }),
       });
@@ -267,7 +354,7 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
   };
 
   const confirmOrder = async () => {
-    if (!verifiedDetails || isLoading) return;
+    if (!verifiedDetails || isLoading || !validateProductOptions()) return;
     setIsLoading(true);
 
     try {
@@ -277,7 +364,7 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
         body: JSON.stringify({
           action: 'confirm_order',
           sessionId,
-          productInfo,
+          productInfo: resolvedProductInfo,
           details: verifiedDetails,
         }),
       });
@@ -321,6 +408,10 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
 
   const handleNewOrder = () => window.location.reload();
 
+  const productOptionText = (orderData?.productOptions || selectedProductOptions)
+    .map(option => `${option.name}: ${option.value}`)
+    .join(' • ');
+
   if (!isStarted) {
     return (
       <div className="min-h-screen flex flex-col bg-[#eae6df]">
@@ -332,18 +423,23 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
               <BrandLogo size="lg" className="ring-2 ring-[#075e54]/10" />
             </div>
 
+            {productInfo.image && (
+              <div className="mx-auto mt-5 h-28 w-28 overflow-hidden rounded-2xl bg-gray-50 ring-1 ring-gray-100">
+                <img src={productInfo.image} alt={productInfo.productName} className="h-full w-full object-cover" />
+              </div>
+            )}
+
             <div className="mt-5 text-center">
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#075e54]">Ready to order</p>
               <h2 className="mt-2 text-xl font-bold text-gray-950">{productInfo.productName}</h2>
 
-              {(productInfo.color || productInfo.size) && (
+              {selectedProductOptions.length > 0 && (
                 <div className="mt-3 flex flex-wrap justify-center gap-2">
-                  {productInfo.color && (
-                    <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700">{productInfo.color}</span>
-                  )}
-                  {productInfo.size && (
-                    <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700">Size {productInfo.size}</span>
-                  )}
+                  {selectedProductOptions.map(option => (
+                    <span key={option.name} className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700">
+                      {option.name}: {option.value}
+                    </span>
+                  ))}
                 </div>
               )}
 
@@ -354,7 +450,7 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
 
             <div className="rounded-2xl bg-[#f7faf9] px-4 py-3 text-center">
               <p className="text-sm leading-5 text-gray-600">
-                Apni delivery details ek hi dafa fill karein. AI verify karega aur sirf doubtful detail dobara poochega.
+                Product options aur delivery details ek hi dafa confirm karein. AI sirf doubtful detail dobara poochega.
               </p>
             </div>
 
@@ -368,7 +464,7 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
 
             <div className="mt-5 flex items-center justify-center gap-2 text-xs text-gray-500">
               <ShieldCheck className="h-4 w-4 text-[#075e54]" />
-              <span>Cash on Delivery • Secure Order</span>
+              <span>COD &amp; Advance Payment • Secure Order</span>
             </div>
           </div>
         </main>
@@ -398,7 +494,11 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
             </div>
 
             <div className="mt-5 space-y-3">
-              <DetailRow label="Product" value={orderData.productName} icon={<ShoppingBag className="h-4 w-4" />} />
+              <DetailRow
+                label="Product"
+                value={`${orderData.productName}${productOptionText ? ` — ${productOptionText}` : ''}`}
+                icon={<ShoppingBag className="h-4 w-4" />}
+              />
               <DetailRow label="Customer" value={orderData.customerName} icon={<User className="h-4 w-4" />} />
               <DetailRow label="Phone" value={orderData.customerPhone} icon={<Phone className="h-4 w-4" />} />
               <DetailRow
@@ -432,14 +532,19 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
       </div>
 
       <div className="border-b bg-white px-4 py-2.5 flex items-center gap-3">
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gray-100">
-          <ShoppingBag className="h-4 w-4 text-gray-500" />
-        </div>
+        {productInfo.image ? (
+          <img src={productInfo.image} alt="" className="h-10 w-10 rounded-xl object-cover ring-1 ring-gray-100" />
+        ) : (
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gray-100">
+            <ShoppingBag className="h-4 w-4 text-gray-500" />
+          </div>
+        )}
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-semibold text-gray-900">{productInfo.productName}</p>
-          <div className="flex items-center gap-2 text-xs text-gray-500">
-            {productInfo.color && <span>{productInfo.color}</span>}
-            {productInfo.size && <span>• {productInfo.size}</span>}
+          <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
+            {selectedProductOptions.map(option => (
+              <span key={option.name}>{option.name}: {option.value}</span>
+            ))}
             {productInfo.price && <span className="font-bold text-[#075e54]">Rs.{productInfo.price}</span>}
           </div>
         </div>
@@ -473,10 +578,38 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
                 <ShieldCheck className="h-5 w-5" />
               </div>
               <div>
-                <h3 className="font-bold text-gray-900">Delivery Details</h3>
-                <p className="mt-0.5 text-xs text-gray-500">Sab details ek hi dafa fill karein — AI ek saath verify karega.</p>
+                <h3 className="font-bold text-gray-900">Complete Your Order</h3>
+                <p className="mt-0.5 text-xs text-gray-500">Product options confirm karein aur delivery details ek hi dafa fill karein.</p>
               </div>
             </div>
+
+            {(productInfo.options || []).length > 0 && (
+              <div className="mt-5 rounded-2xl border border-gray-100 bg-gray-50/70 p-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <SlidersHorizontal className="h-4 w-4 text-[#075e54]" />
+                  <h4 className="text-sm font-bold text-gray-900">Product Options</h4>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {(productInfo.options || []).map(definition => (
+                    <label key={definition.name} className="block">
+                      <span className="mb-1.5 block text-xs font-semibold text-gray-700">{definition.name}</span>
+                      <select
+                        value={productOptionValues[definition.name] || ''}
+                        onChange={event => updateProductOption(definition.name, event.target.value)}
+                        disabled={isLoading}
+                        className="h-11 w-full rounded-xl border border-gray-200 bg-white px-3 text-sm outline-none transition focus:ring-2 focus:ring-[#075e54]/20"
+                      >
+                        <option value="">Select {definition.name}</option>
+                        {definition.values.map(value => (
+                          <option key={value} value={value}>{value}</option>
+                        ))}
+                      </select>
+                    </label>
+                  ))}
+                </div>
+                {productOptionError && <p className="mt-2 text-xs font-medium text-red-600">{productOptionError}</p>}
+              </div>
+            )}
 
             {issues.length > 0 && (
               <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3">
@@ -489,7 +622,7 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
               </div>
             )}
 
-            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <div className="mt-5 grid gap-4 sm:grid-cols-2">
               <label className="block">
                 <span className="mb-1.5 block text-xs font-semibold text-gray-700">Full Name</span>
                 <input
@@ -560,6 +693,15 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
               <h3 className="font-bold">Details Verified</h3>
             </div>
             <p className="mt-1 text-xs text-gray-500">Final summary check kar lein. Sahi ho to order confirm karein.</p>
+
+            {selectedProductOptions.length > 0 && (
+              <div className="mt-4 rounded-xl bg-gray-50 p-3">
+                <p className="text-[11px] text-gray-500">Product Options</p>
+                <p className="mt-1 text-sm font-semibold text-gray-900">
+                  {selectedProductOptions.map(option => `${option.name}: ${option.value}`).join(' • ')}
+                </p>
+              </div>
+            )}
 
             <div className="mt-4 grid gap-2 sm:grid-cols-2">
               <DetailRow label="Name" value={verifiedDetails.customerName} icon={<User className="h-4 w-4" />} />
