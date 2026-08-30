@@ -14,6 +14,15 @@ type SelectedProductOption = {
   value: string;
 };
 
+type ProductVariant = {
+  id: string;
+  options: string[];
+  available: boolean;
+  price?: string;
+  compareAtPrice?: string | null;
+  sku?: string | null;
+};
+
 function generateSessionId(): string {
   return 'sess_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
 }
@@ -33,6 +42,7 @@ export default function Home() {
   const productInfo = useMemo(() => {
     const options = parseJsonParam<ProductOptionDefinition[]>(searchParams.get('options'), []);
     const selectedOptions = parseJsonParam<SelectedProductOption[]>(searchParams.get('selectedOptions'), []);
+    const variants = parseJsonParam<ProductVariant[]>(searchParams.get('variants'), []);
 
     const selectedColor = selectedOptions.find(option => /colou?r/i.test(option.name))?.value;
     const selectedSize = selectedOptions.find(option => /size/i.test(option.name))?.value;
@@ -50,6 +60,7 @@ export default function Home() {
       available: searchParams.has('available') ? searchParams.get('available') === '1' : undefined,
       options,
       selectedOptions,
+      variants,
     };
   }, [searchParams]);
 
