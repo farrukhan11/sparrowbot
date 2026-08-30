@@ -1,9 +1,20 @@
 import { MongoClient, ObjectId, type Collection } from 'mongodb';
 
+type ProductOptionValue = {
+  name: string;
+  value: string;
+};
+
 type OrderRecord = {
   id: string;
   sessionId: string;
   productName: string;
+  productId: string | null;
+  productHandle: string | null;
+  variantId: string | null;
+  productUrl: string | null;
+  productImage: string | null;
+  productOptions: ProductOptionValue[] | null;
   color: string | null;
   size: string | null;
   price: string | null;
@@ -25,6 +36,12 @@ type OrderDocument = Omit<OrderRecord, 'id'> & {
 type CreateOrderData = Partial<
   Pick<
     OrderRecord,
+    | 'productId'
+    | 'productHandle'
+    | 'variantId'
+    | 'productUrl'
+    | 'productImage'
+    | 'productOptions'
     | 'color'
     | 'size'
     | 'price'
@@ -85,8 +102,6 @@ async function getOrdersCollection(): Promise<Collection<OrderDocument>> {
     return client.db(configuredDbName).collection<OrderDocument>('orders');
   }
 
-  // Respect a database name already present in MONGODB_URI. If the URI has no
-  // database name, the driver defaults to "test", so use a project-specific DB.
   const defaultDb = client.db();
   const db = defaultDb.databaseName === 'test' ? client.db('sparrowbot') : defaultDb;
   return db.collection<OrderDocument>('orders');
@@ -96,6 +111,12 @@ function serializeOrder(document: OrderDocument): OrderRecord {
   const { _id, ...order } = document;
   return {
     id: _id.toHexString(),
+    productId: order.productId ?? null,
+    productHandle: order.productHandle ?? null,
+    variantId: order.variantId ?? null,
+    productUrl: order.productUrl ?? null,
+    productImage: order.productImage ?? null,
+    productOptions: order.productOptions ?? null,
     ...order,
   };
 }
@@ -109,6 +130,12 @@ export const db = {
       const document: Omit<OrderDocument, '_id'> = {
         sessionId: data.sessionId,
         productName: data.productName,
+        productId: data.productId ?? null,
+        productHandle: data.productHandle ?? null,
+        variantId: data.variantId ?? null,
+        productUrl: data.productUrl ?? null,
+        productImage: data.productImage ?? null,
+        productOptions: data.productOptions ?? null,
         color: data.color ?? null,
         size: data.size ?? null,
         price: data.price ?? null,
