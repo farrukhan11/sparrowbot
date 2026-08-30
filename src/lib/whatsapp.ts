@@ -23,6 +23,8 @@ export type OrderNotificationResult = {
 const GRAPH_API_VERSION =
   process.env.WHATSAPP_GRAPH_API_VERSION?.trim() || 'v25.0';
 
+const META_TEST_ORDER_TEMPLATE = 'jaspers_market_order_confirmation_v1';
+
 function normalizeWhatsAppNumber(value: string | null | undefined): string {
   const digits = (value || '').replace(/\D/g, '');
 
@@ -52,6 +54,16 @@ function productLabel(order: WhatsAppOrder): string {
     : order.productName;
 }
 
+function estimatedDeliveryDate(): string {
+  const delivery = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  return delivery.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    timeZone: 'Asia/Karachi',
+  });
+}
+
 async function postWhatsAppMessage(payload: Record<string, unknown>): Promise<SendResult> {
   const accessToken = process.env.WHATSAPP_ACCESS_TOKEN?.trim();
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID?.trim();
@@ -76,11 +88,12 @@ async function postWhatsAppMessage(payload: Record<string, unknown>): Promise<Se
       }
     );
 
+    const body = await response.text();
+
     if (!response.ok) {
-      const errorBody = await response.text();
       return {
         sent: false,
-        error: `WhatsApp API ${response.status}: ${errorBody}`,
+        error: `WhatsApp API ${response.status}: ${body}`,
       };
     }
 
@@ -146,13 +159,13 @@ async function sendTemplateOrText({
     const templateResult = await sendTemplate(to, templateName, templateParameters);
     if (templateResult.sent) return templateResult;
 
-    console.error('WhatsApp template message failed:', templateResult.error);
-  } else {
-    console.warn(
-      'No WhatsApp template configured. Falling back to a free-form text message, which requires an open customer service window.'
-    );
+    console.error(`WhatsApp template ${templateName} failed:`, templateResult.error);
+    return templateResult;
   }
 
+  console.warn(
+    'No WhatsApp template configured. Falling back to a free-form text message, which requires an open customer service window.'
+  );
   return sendText(to, text);
 }
 
@@ -166,6 +179,11 @@ export async function sendOrderWhatsAppNotifications(
   const orderId = shortOrderId(order.id);
   const product = productLabel(order);
   const amount = order.price ? `Rs.${order.price}` : 'Not specified';
+
+  const configuredCustomerTemplate =
+    process.env.WHATSAPP_CUSTOMER_TEMPLATE_NAME?.trim();
+  const configuredOwnerTemplate =
+    process.env.WHATSAPP_OWNER_TEMPLATE_NAME?.trim();
 
   const customerText =
     `Assalam o Alaikum ${order.customerName || 'Ji'}! ✅\n\n` +
@@ -187,16 +205,35 @@ export async function sendOrderWhatsAppNotifications(
     `Address: ${order.customerAddress || '-'}\n\n` +
     `Created: ${new Date().toLocaleString('en-PK', { timeZone: 'Asia/Karachi' })}`;
 
-  const customerPromise = customerNumber
-    ? sendTemplateOrText({
-        to: customerNumber,
-        templateName: process.env.WHATSAPP_CUSTOMER_TEMPLATE_NAME?.trim(),
-        templateParameters: [
+  const customerTemplateParameters =
+    configuredCustomerTemplate === META_TEST_ORDER_TEMPLATE
+      ? [
+          order.customerName || 'Customer',
+          orderId,
+          estimatedDeliveryDate(),
+        ]
+      : [
           order.customerName || 'Customer',
           orderId,
           product,
           amount,
-        ],
+        ];
+
+  const ownerTemplateParameters = [
+    orderId,
+    product,
+    order.customerName || '-',
+    order.customerPhone || '-',
+    order.customerCity || '-',
+    order.customerAddress || '-',
+    amount,
+  ];
+
+  const customerPromise = customerNumber
+    ? sendTemplateOrText({
+        to: customerNumber,
+        templateName: configuredCustomerTemplate,
+        templateParameters: customerTemplateParameters,
         text: customerText,
       })
     : Promise.resolve({ sent: false, error: 'Customer phone number is missing' });
@@ -204,16 +241,8 @@ export async function sendOrderWhatsAppNotifications(
   const ownerPromise = ownerNumber
     ? sendTemplateOrText({
         to: ownerNumber,
-        templateName: process.env.WHATSAPP_OWNER_TEMPLATE_NAME?.trim(),
-        templateParameters: [
-          orderId,
-          product,
-          order.customerName || '-',
-          order.customerPhone || '-',
-          order.customerCity || '-',
-          order.customerAddress || '-',
-          amount,
-        ],
+        templateName: configuredOwnerTemplate,
+        templateParameters: ownerTemplateParameters,
         text: ownerText,
       })
     : Promise.resolve({ sent: false, error: 'WHATSAPP_ORDER_RECIPIENT is missing' });
@@ -225,10 +254,18 @@ export async function sendOrderWhatsAppNotifications(
 
   if (!customerResult.sent) {
     console.error('Customer WhatsApp notification failed:', customerResult.error);
+  } else {
+    console.info(
+      `Customer WhatsApp notification sent${configuredCustomerTemplate ? ` using ${configuredCustomerTemplate}` : ''}.`
+    );
   }
 
   if (!ownerResult.sent) {
     console.error('Owner WhatsApp notification failed:', ownerResult.error);
+  } else {
+    console.info(
+      `Owner WhatsApp notification sent${configuredOwnerTemplate ? ` using ${configuredOwnerTemplate}` : ''}.`
+    );
   }
 
   return {
