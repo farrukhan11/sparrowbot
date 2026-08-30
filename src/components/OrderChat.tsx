@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { Send, ShoppingBag, User, MapPin, Phone, CheckCircle2, MessageCircle, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
+import BrandLogo from '@/components/BrandLogo';
 
 interface Message {
   id: string;
@@ -39,6 +40,21 @@ function getTimeString(): string {
     minute: '2-digit',
     hour12: true,
   });
+}
+
+function ChatHeader({ subtitle }: { subtitle: string }) {
+  return (
+    <header className="bg-[#075e54] text-white px-4 py-3 flex items-center gap-3 shadow-md">
+      <BrandLogo size="sm" />
+      <div>
+        <h1 className="font-bold text-base">Sparrow Official</h1>
+        <p className="text-xs text-green-200 flex items-center gap-1">
+          <span className="w-1.5 h-1.5 bg-green-300 rounded-full inline-block" />
+          {subtitle}
+        </p>
+      </div>
+    </header>
+  );
 }
 
 export default function OrderChat({ productInfo, sessionId }: { productInfo: ProductInfo; sessionId: string }) {
@@ -86,10 +102,7 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
       });
 
       const data = await res.json();
-
-      if (data.error) {
-        throw new Error(data.error);
-      }
+      if (data.error) throw new Error(data.error);
 
       const botMsg: Message = {
         id: `bot-${Date.now()}`,
@@ -102,11 +115,9 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
 
       if (data.orderComplete && data.order) {
         setOrderData(data.order);
-        setTimeout(() => {
-          setShowOrderSummary(true);
-        }, 1200);
+        setTimeout(() => setShowOrderSummary(true), 1200);
       }
-    } catch (error) {
+    } catch {
       const errorMsg: Message = {
         id: `err-${Date.now()}`,
         text: 'Oops! Kuch technical issue aa gaya. Please thodi der baad try karein. 🙏',
@@ -125,38 +136,24 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
     }
   }, [isLoading, sessionId, productInfo, toast]);
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    sendMessage(input);
-  };
-
   const handleStart = () => {
     setIsStarted(true);
     sendMessage('hi');
   };
 
-  const handleNewOrder = () => {
-    window.location.reload();
-  };
+  const handleNewOrder = () => window.location.reload();
 
   if (!isStarted) {
     return (
       <div className="min-h-screen flex flex-col bg-[#eae6df]">
-        <header className="bg-[#075e54] text-white px-4 py-3 flex items-center gap-3 shadow-md">
-          <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center">
-            <ShoppingBag className="w-5 h-5" />
-          </div>
-          <div>
-            <h1 className="font-bold text-base">Sparrow Official</h1>
-            <p className="text-xs text-green-200 flex items-center gap-1">
-              <span className="w-1.5 h-1.5 bg-green-300 rounded-full inline-block" />
-              Online — Order Assistant
-            </p>
-          </div>
-        </header>
+        <ChatHeader subtitle="Online — Order Assistant" />
 
         <div className="flex-1 flex flex-col items-center justify-center px-4 py-8">
           <div className="bg-white rounded-2xl shadow-lg p-6 max-w-sm w-full">
+            <div className="flex justify-center mb-5">
+              <BrandLogo size="lg" className="ring-2 ring-[#075e54]/10" />
+            </div>
+
             <div className="flex items-start gap-4 mb-5">
               <div className="w-20 h-20 bg-[#f0f0f0] rounded-xl flex items-center justify-center flex-shrink-0">
                 <ShoppingBag className="w-8 h-8 text-gray-400" />
@@ -178,9 +175,7 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
                   )}
                 </div>
                 {productInfo.price && (
-                  <p className="text-[#075e54] font-bold text-lg mt-2">
-                    Rs.{productInfo.price}
-                  </p>
+                  <p className="text-[#075e54] font-bold text-lg mt-2">Rs.{productInfo.price}</p>
                 )}
               </div>
             </div>
@@ -200,9 +195,7 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
           </div>
 
           <div className="mt-6 text-center">
-            <p className="text-xs text-gray-500">
-              Cash on Delivery • Next Day Delivery
-            </p>
+            <p className="text-xs text-gray-500">Cash on Delivery • Next Day Delivery</p>
           </div>
         </div>
       </div>
@@ -212,23 +205,18 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
   if (showOrderSummary && orderData) {
     return (
       <div className="min-h-screen flex flex-col bg-[#eae6df]">
-        <header className="bg-[#075e54] text-white px-4 py-3 flex items-center gap-3 shadow-md">
-          <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center">
-            <CheckCircle2 className="w-5 h-5" />
-          </div>
-          <div>
-            <h1 className="font-bold text-base">Order Confirmed!</h1>
-            <p className="text-xs text-green-200">Thank you for shopping</p>
-          </div>
-        </header>
+        <ChatHeader subtitle="Order Confirmed — Thank you for shopping" />
 
         <div className="flex-1 flex flex-col items-center justify-center px-4 py-8">
           <div className="bg-white rounded-2xl shadow-lg p-6 max-w-sm w-full">
             <div className="text-center mb-5">
-              <div className="w-16 h-16 bg-[#25d366]/10 rounded-full flex items-center justify-center mx-auto mb-3">
-                <CheckCircle2 className="w-8 h-8 text-[#25d366]" />
+              <div className="flex justify-center mb-3">
+                <BrandLogo size="lg" className="ring-2 ring-[#25d366]/20" />
               </div>
-              <h2 className="font-bold text-lg text-gray-900">Order Confirm Ho Gaya! ✅</h2>
+              <div className="flex items-center justify-center gap-2">
+                <CheckCircle2 className="w-5 h-5 text-[#25d366]" />
+                <h2 className="font-bold text-lg text-gray-900">Order Confirm Ho Gaya!</h2>
+              </div>
               <p className="text-xs text-gray-500 mt-1">
                 Aapka Order ID: <span className="font-mono font-bold">{orderData.id.slice(0, 8).toUpperCase()}</span>
               </p>
@@ -303,18 +291,9 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
 
   return (
     <div className="min-h-screen flex flex-col bg-[#eae6df]">
-      <header className="bg-[#075e54] text-white px-4 py-3 flex items-center gap-3 shadow-md sticky top-0 z-10">
-        <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center">
-          <ShoppingBag className="w-5 h-5" />
-        </div>
-        <div className="flex-1">
-          <h1 className="font-bold text-base">Sparrow Official</h1>
-          <p className="text-xs text-green-200 flex items-center gap-1">
-            <span className="w-1.5 h-1.5 bg-green-300 rounded-full inline-block" />
-            Online
-          </p>
-        </div>
-      </header>
+      <div className="sticky top-0 z-10">
+        <ChatHeader subtitle="Online" />
+      </div>
 
       <div className="bg-white border-b px-4 py-2.5 flex items-center gap-3">
         <div className="w-12 h-12 bg-[#f0f0f0] rounded-lg flex items-center justify-center flex-shrink-0">
@@ -330,14 +309,14 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 py-4 space-y-2" style={{
-        backgroundImage: 'url("data:image/svg+xml,%3Csvg width=\'60\' height=\'60\' viewBox=\'0 0 60 60\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cg fill=\'none\' fill-rule=\'evenodd\'%3E%3Cg fill=\'%23d4d0c8\' fill-opacity=\'0.15\'%3E%3Cpath d=\'M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4h-4z\'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")',
-      }}>
-        {messages.map((msg) => (
-          <div
-            key={msg.id}
-            className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
-          >
+      <div
+        className="flex-1 overflow-y-auto px-3 py-4 space-y-2"
+        style={{
+          backgroundImage: 'url("data:image/svg+xml,%3Csvg width=\'60\' height=\'60\' viewBox=\'0 0 60 60\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cg fill=\'none\' fill-rule=\'evenodd\'%3E%3Cg fill=\'%23d4d0c8\' fill-opacity=\'0.15\'%3E%3Cpath d=\'M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z\'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")',
+        }}
+      >
+        {messages.map(msg => (
+          <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div
               className={`max-w-[80%] px-3.5 py-2 rounded-2xl shadow-sm relative ${
                 msg.sender === 'user'
@@ -373,8 +352,8 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
             ref={inputRef}
             type="text"
             value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 sendMessage(input);
@@ -386,16 +365,12 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
           />
         </div>
         <Button
-          onClick={handleSubmit}
+          onClick={() => sendMessage(input)}
           disabled={!input.trim() || isLoading}
           size="icon"
           className="w-11 h-11 rounded-full bg-[#075e54] hover:bg-[#064e46] text-white flex-shrink-0 transition-all active:scale-95 disabled:opacity-40"
         >
-          {isLoading ? (
-            <Loader2 className="w-5 h-5 animate-spin" />
-          ) : (
-            <Send className="w-5 h-5" />
-          )}
+          {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
         </Button>
       </div>
     </div>
