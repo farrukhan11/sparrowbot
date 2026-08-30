@@ -1,6 +1,12 @@
+type ProductOptionValue = {
+  name: string;
+  value: string;
+};
+
 type WhatsAppOrder = {
   id: string;
   productName: string;
+  productOptions?: ProductOptionValue[] | null;
   color: string | null;
   size: string | null;
   price: string | null;
@@ -46,10 +52,16 @@ function shortOrderId(id: string): string {
 }
 
 function productLabel(order: WhatsAppOrder): string {
-  const options = [
+  const genericOptions = (order.productOptions || [])
+    .filter(option => option?.name && option?.value)
+    .map(option => `${option.name}: ${option.value}`);
+
+  const legacyOptions = [
     order.color ? `Color: ${order.color}` : '',
     order.size ? `Size: ${order.size}` : '',
   ].filter(Boolean);
+
+  const options = genericOptions.length > 0 ? genericOptions : legacyOptions;
 
   return options.length > 0
     ? `${order.productName} (${options.join(', ')})`
@@ -248,8 +260,6 @@ export async function sendOrderWhatsAppNotifications(
       })
     : Promise.resolve({ sent: false, error: 'Customer phone number is missing' });
 
-  // Owner/admin notification is optional. During Meta test mode the same phone
-  // is often used as both customer and owner; skip the duplicate second send.
   const shouldSendOwner = Boolean(ownerNumber && ownerNumber !== customerNumber);
   const ownerPromise: Promise<SendResult> = shouldSendOwner
     ? sendTemplateOrText({
