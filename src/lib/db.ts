@@ -110,6 +110,7 @@ async function getOrdersCollection(): Promise<Collection<OrderDocument>> {
 function serializeOrder(document: OrderDocument): OrderRecord {
   const { _id, ...order } = document;
   return {
+    ...order,
     id: _id.toHexString(),
     productId: order.productId ?? null,
     productHandle: order.productHandle ?? null,
@@ -117,7 +118,6 @@ function serializeOrder(document: OrderDocument): OrderRecord {
     productUrl: order.productUrl ?? null,
     productImage: order.productImage ?? null,
     productOptions: order.productOptions ?? null,
-    ...order,
   };
 }
 
