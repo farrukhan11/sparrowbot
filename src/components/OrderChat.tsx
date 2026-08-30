@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, ShoppingBag, User, MapPin, Phone, CheckCircle2, MessageCircle, Loader2 } from 'lucide-react';
+import { Send, ShoppingBag, User, MapPin, Phone, CheckCircle2, MessageCircle, Loader2, ShieldCheck, Truck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
 import BrandLogo from '@/components/BrandLogo';
@@ -45,7 +45,9 @@ function getTimeString(): string {
 function ChatHeader({ subtitle }: { subtitle: string }) {
   return (
     <header className="bg-[#075e54] text-white px-4 py-3 flex items-center gap-3 shadow-md">
-      <BrandLogo size="sm" />
+      <div className="rounded-full bg-white p-1 shadow-sm">
+        <BrandLogo size="sm" />
+      </div>
       <div>
         <h1 className="font-bold text-base">Sparrow Official</h1>
         <p className="text-xs text-green-200 flex items-center gap-1">
@@ -145,59 +147,85 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
 
   if (!isStarted) {
     return (
-      <div className="min-h-screen flex flex-col bg-[#eae6df]">
+      <div className="min-h-screen flex flex-col bg-[#f4f1eb]">
         <ChatHeader subtitle="Online — Order Assistant" />
 
-        <div className="flex-1 flex flex-col items-center justify-center px-4 py-8">
-          <div className="bg-white rounded-2xl shadow-lg p-6 max-w-sm w-full">
-            <div className="flex justify-center mb-5">
-              <BrandLogo size="lg" className="ring-2 ring-[#075e54]/10" />
-            </div>
-
-            <div className="flex items-start gap-4 mb-5">
-              <div className="w-20 h-20 bg-[#f0f0f0] rounded-xl flex items-center justify-center flex-shrink-0">
-                <ShoppingBag className="w-8 h-8 text-gray-400" />
+        <main className="flex-1 flex items-center justify-center px-4 py-8 sm:py-12">
+          <div className="w-full max-w-md">
+            <section className="overflow-hidden rounded-[28px] border border-black/5 bg-white shadow-[0_18px_55px_rgba(0,0,0,0.10)]">
+              <div className="px-7 pt-7 pb-6 text-center">
+                <div className="flex justify-center mb-3">
+                  <BrandLogo size="lg" />
+                </div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#075e54]/70">
+                  Sparrow Official
+                </p>
+                <h1 className="mt-2 text-xl font-bold text-gray-950">Complete Your Order</h1>
+                <p className="mt-1 text-sm leading-5 text-gray-500">
+                  Hamara AI assistant aapki delivery details securely collect karega.
+                </p>
               </div>
-              <div className="flex-1">
-                <h2 className="font-bold text-gray-900 text-sm leading-tight mb-1">
-                  {productInfo.productName}
-                </h2>
-                <div className="flex flex-wrap gap-1.5 mt-2">
-                  {productInfo.color && (
-                    <span className="inline-flex items-center px-2 py-0.5 bg-gray-100 rounded-full text-xs text-gray-600">
-                      {productInfo.color}
-                    </span>
-                  )}
-                  {productInfo.size && (
-                    <span className="inline-flex items-center px-2 py-0.5 bg-gray-100 rounded-full text-xs text-gray-600">
-                      Size: {productInfo.size}
-                    </span>
+
+              <div className="mx-5 rounded-2xl border border-[#075e54]/10 bg-[#f7fbf9] p-4">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#075e54] text-white shadow-sm">
+                    <ShoppingBag className="h-5 w-5" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400">Your Product</p>
+                    <h2 className="truncate text-base font-bold text-gray-950">{productInfo.productName}</h2>
+                  </div>
+                  {productInfo.price && (
+                    <div className="shrink-0 text-right">
+                      <p className="text-[10px] text-gray-400">Price</p>
+                      <p className="text-sm font-bold text-[#075e54]">Rs.{productInfo.price}</p>
+                    </div>
                   )}
                 </div>
-                {productInfo.price && (
-                  <p className="text-[#075e54] font-bold text-lg mt-2">Rs.{productInfo.price}</p>
+
+                {(productInfo.color || productInfo.size) && (
+                  <div className="mt-3 flex flex-wrap gap-2 border-t border-[#075e54]/10 pt-3">
+                    {productInfo.color && (
+                      <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-gray-600 shadow-sm ring-1 ring-black/5">
+                        {productInfo.color}
+                      </span>
+                    )}
+                    {productInfo.size && (
+                      <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-gray-600 shadow-sm ring-1 ring-black/5">
+                        Size: {productInfo.size}
+                      </span>
+                    )}
+                  </div>
                 )}
               </div>
-            </div>
 
-            <div className="border-t pt-4 mt-2">
-              <p className="text-xs text-gray-500 text-center mb-4">
-                AI assistant aap se order details collect karega — bilkul WhatsApp chat jaisa!
-              </p>
-              <Button
-                onClick={handleStart}
-                className="w-full bg-[#25d366] hover:bg-[#1ebe57] text-white font-semibold py-6 text-base rounded-xl transition-all active:scale-[0.98]"
-              >
-                <MessageCircle className="w-5 h-5 mr-2" />
-                Start Chat — Order Karein
-              </Button>
-            </div>
-          </div>
+              <div className="px-5 pb-5 pt-5">
+                <Button
+                  onClick={handleStart}
+                  className="h-13 w-full rounded-2xl bg-[#075e54] py-6 text-base font-bold text-white shadow-md transition-all hover:bg-[#064e46] active:scale-[0.99]"
+                >
+                  <MessageCircle className="mr-2 h-5 w-5" />
+                  Start Order Chat
+                </Button>
 
-          <div className="mt-6 text-center">
-            <p className="text-xs text-gray-500">Cash on Delivery • Next Day Delivery</p>
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  <div className="flex items-center justify-center gap-1.5 rounded-xl bg-gray-50 px-2 py-2 text-[11px] font-medium text-gray-500">
+                    <ShieldCheck className="h-3.5 w-3.5 text-[#075e54]" />
+                    Secure details
+                  </div>
+                  <div className="flex items-center justify-center gap-1.5 rounded-xl bg-gray-50 px-2 py-2 text-[11px] font-medium text-gray-500">
+                    <Truck className="h-3.5 w-3.5 text-[#075e54]" />
+                    Cash on Delivery
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <p className="mt-5 text-center text-xs text-gray-400">
+              Fast checkout • WhatsApp confirmation
+            </p>
           </div>
-        </div>
+        </main>
       </div>
     );
   }
@@ -211,7 +239,7 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
           <div className="bg-white rounded-2xl shadow-lg p-6 max-w-sm w-full">
             <div className="text-center mb-5">
               <div className="flex justify-center mb-3">
-                <BrandLogo size="lg" className="ring-2 ring-[#25d366]/20" />
+                <BrandLogo size="lg" />
               </div>
               <div className="flex items-center justify-center gap-2">
                 <CheckCircle2 className="w-5 h-5 text-[#25d366]" />
