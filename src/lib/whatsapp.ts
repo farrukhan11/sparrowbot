@@ -25,6 +25,7 @@ const GRAPH_API_VERSION =
   process.env.WHATSAPP_GRAPH_API_VERSION?.trim() || 'v25.0';
 
 const META_TEST_ORDER_TEMPLATE = 'jaspers_market_order_confirmation_v1';
+const SPARROW_ORDER_TEMPLATE = 'sparrow_order_confirmation';
 
 function normalizeWhatsAppNumber(value: string | null | undefined): string {
   const digits = (value || '').replace(/\D/g, '');
@@ -213,12 +214,20 @@ export async function sendOrderWhatsAppNotifications(
           orderId,
           estimatedDeliveryDate(),
         ]
-      : [
-          order.customerName || 'Customer',
-          orderId,
-          product,
-          amount,
-        ];
+      : configuredCustomerTemplate === SPARROW_ORDER_TEMPLATE
+        ? [
+            order.customerName || 'Customer',
+            orderId,
+            product,
+            amount,
+            order.customerCity || '-',
+          ]
+        : [
+            order.customerName || 'Customer',
+            orderId,
+            product,
+            amount,
+          ];
 
   const ownerTemplateParameters = [
     orderId,
