@@ -1,12 +1,32 @@
 PORT=3001
-# Database
-DATABASE_URL=file:./db/custom.db
 
-# Gemini API Keys (FREE) — Get yours at: https://aistudio.google.com/apikey
-# Add up to 3 keys (from 3 different Google accounts) = 3x free daily quota (1500 req/day)
-GEMINI_API_KEY_1=AQ.Ab8RN6LJj0cCw26wOpxwBanG7PnnxuagRm_18QwGvy9BjH6OtQGE
+# Primary AI provider
+GROQ_API_KEY=
+
+# MongoDB
+MONGODB_URI=mongodb+srv://USERNAME:PASSWORD@CLUSTER/sparrowbot
+# Optional override if your URI does not include a database name
+MONGODB_DB=sparrowbot
+
+# Optional Gemini fallback
+GEMINI_API_KEY_1=
 GEMINI_API_KEY_2=
 GEMINI_API_KEY_3=
 
-WHATSAPP_ACCESS_TOKEN=your_page_access_token
-WHATSAPP_PHONE_NUMBER=923150700351
+# WhatsApp Cloud API
+WHATSAPP_ACCESS_TOKEN=
+WHATSAPP_PHONE_NUMBER_ID=
+WHATSAPP_WABA_ID=
+WHATSAPP_ORDER_RECIPIENT=923XXXXXXXXX
+WHATSAPP_GRAPH_API_VERSION=v23.0
+
+# Recommended for production business-initiated messages.
+# Customer template body variables, in order:
+# {{1}} customer name, {{2}} order ID, {{3}} product, {{4}} amount
+WHATSAPP_CUSTOMER_TEMPLATE_NAME=
+
+# Owner template body variables, in order:
+# {{1}} order ID, {{2}} product, {{3}} customer name, {{4}} phone,
+# {{5}} city, {{6}} address, {{7}} amount
+WHATSAPP_OWNER_TEMPLATE_NAME=
+WHATSAPP_TEMPLATE_LANGUAGE=en_US

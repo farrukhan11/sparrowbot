@@ -1,11 +1,10 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, ShoppingBag, User, MapPin, Phone, CheckCircle2, MessageCircle, Loader2, ChevronRight } from 'lucide-react';
+import { Send, ShoppingBag, User, MapPin, Phone, CheckCircle2, MessageCircle, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
 
-// Types
 interface Message {
   id: string;
   text: string;
@@ -30,7 +29,8 @@ interface OrderData {
   color: string | null;
   size: string | null;
   price: string | null;
-  whatsappLink: string;
+  customerWhatsAppSent?: boolean;
+  ownerWhatsAppSent?: boolean;
 }
 
 function getTimeString(): string {
@@ -104,7 +104,7 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
         setOrderData(data.order);
         setTimeout(() => {
           setShowOrderSummary(true);
-        }, 1500);
+        }, 1200);
       }
     } catch (error) {
       const errorMsg: Message = {
@@ -135,25 +135,13 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
     sendMessage('hi');
   };
 
-  const handleConfirmOrder = () => {
-    if (orderData) {
-      window.open(orderData.whatsappLink, '_blank');
-      toast({
-        title: 'Order Sent! ✅',
-        description: 'Aapka order WhatsApp pe store owner ko bhej diya gaya hai.',
-      });
-    }
-  };
-
   const handleNewOrder = () => {
     window.location.reload();
   };
 
-  // Initial screen - before chat starts
   if (!isStarted) {
     return (
       <div className="min-h-screen flex flex-col bg-[#eae6df]">
-        {/* WhatsApp-style header */}
         <header className="bg-[#075e54] text-white px-4 py-3 flex items-center gap-3 shadow-md">
           <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center">
             <ShoppingBag className="w-5 h-5" />
@@ -167,10 +155,8 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
           </div>
         </header>
 
-        {/* Product card */}
         <div className="flex-1 flex flex-col items-center justify-center px-4 py-8">
           <div className="bg-white rounded-2xl shadow-lg p-6 max-w-sm w-full">
-            {/* Product info */}
             <div className="flex items-start gap-4 mb-5">
               <div className="w-20 h-20 bg-[#f0f0f0] rounded-xl flex items-center justify-center flex-shrink-0">
                 <ShoppingBag className="w-8 h-8 text-gray-400" />
@@ -223,7 +209,6 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
     );
   }
 
-  // Order Summary Screen
   if (showOrderSummary && orderData) {
     return (
       <div className="min-h-screen flex flex-col bg-[#eae6df]">
@@ -239,19 +224,22 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
 
         <div className="flex-1 flex flex-col items-center justify-center px-4 py-8">
           <div className="bg-white rounded-2xl shadow-lg p-6 max-w-sm w-full">
-            {/* Success animation area */}
             <div className="text-center mb-5">
               <div className="w-16 h-16 bg-[#25d366]/10 rounded-full flex items-center justify-center mx-auto mb-3">
                 <CheckCircle2 className="w-8 h-8 text-[#25d366]" />
               </div>
-              <h2 className="font-bold text-lg text-gray-900">Order Note Ho Gaya! ✅</h2>
+              <h2 className="font-bold text-lg text-gray-900">Order Confirm Ho Gaya! ✅</h2>
               <p className="text-xs text-gray-500 mt-1">
-                Aapka order ID: <span className="font-mono font-bold">{orderData.id.slice(0, 8).toUpperCase()}</span>
+                Aapka Order ID: <span className="font-mono font-bold">{orderData.id.slice(0, 8).toUpperCase()}</span>
               </p>
+              {orderData.customerWhatsAppSent && (
+                <p className="text-xs text-[#075e54] mt-2 font-medium">
+                  Confirmation aapke WhatsApp par bhej di gayi hai.
+                </p>
+              )}
             </div>
 
-            {/* Order details */}
-            <div className="space-y-3 mb-5">
+            <div className="space-y-3">
               <div className="flex items-start gap-3 p-3 bg-gray-50 rounded-xl">
                 <ShoppingBag className="w-4 h-4 text-gray-500 mt-0.5 flex-shrink-0" />
                 <div>
@@ -297,19 +285,9 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
               )}
             </div>
 
-            {/* Action buttons */}
-            <div className="space-y-3">
-              <Button
-                onClick={handleConfirmOrder}
-                className="w-full bg-[#25d366] hover:bg-[#1ebe57] text-white font-semibold py-5 text-base rounded-xl flex items-center justify-center gap-2 transition-all active:scale-[0.98]"
-              >
-                Confirm on WhatsApp
-                <ChevronRight className="w-4 h-4" />
-              </Button>
-              <p className="text-xs text-gray-400 text-center">
-                Order confirm karne ke liye WhatsApp pe bhejien
-              </p>
-            </div>
+            <p className="text-xs text-gray-400 text-center mt-5">
+              Aapka order successfully receive ho gaya hai. Order ID save kar lein.
+            </p>
           </div>
 
           <button
@@ -323,10 +301,8 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
     );
   }
 
-  // Main Chat Screen
   return (
     <div className="min-h-screen flex flex-col bg-[#eae6df]">
-      {/* WhatsApp-style header */}
       <header className="bg-[#075e54] text-white px-4 py-3 flex items-center gap-3 shadow-md sticky top-0 z-10">
         <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center">
           <ShoppingBag className="w-5 h-5" />
@@ -340,7 +316,6 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
         </div>
       </header>
 
-      {/* Product info bar */}
       <div className="bg-white border-b px-4 py-2.5 flex items-center gap-3">
         <div className="w-12 h-12 bg-[#f0f0f0] rounded-lg flex items-center justify-center flex-shrink-0">
           <ShoppingBag className="w-5 h-5 text-gray-400" />
@@ -355,9 +330,8 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
         </div>
       </div>
 
-      {/* Chat messages area */}
       <div className="flex-1 overflow-y-auto px-3 py-4 space-y-2" style={{
-        backgroundImage: 'url("data:image/svg+xml,%3Csvg width=\'60\' height=\'60\' viewBox=\'0 0 60 60\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cg fill=\'none\' fill-rule=\'evenodd\'%3E%3Cg fill=\'%23d4d0c8\' fill-opacity=\'0.15\'%3E%3Cpath d=\'M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z\'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")',
+        backgroundImage: 'url("data:image/svg+xml,%3Csvg width=\'60\' height=\'60\' viewBox=\'0 0 60 60\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cg fill=\'none\' fill-rule=\'evenodd\'%3E%3Cg fill=\'%23d4d0c8\' fill-opacity=\'0.15\'%3E%3Cpath d=\'M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4h-4z\'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")',
       }}>
         {messages.map((msg) => (
           <div
@@ -379,7 +353,6 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
           </div>
         ))}
 
-        {/* Typing indicator */}
         {isLoading && (
           <div className="flex justify-start">
             <div className="bg-white px-4 py-3 rounded-2xl rounded-bl-sm shadow-sm">
@@ -394,7 +367,6 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input area */}
       <div className="bg-[#f0f0f0] px-3 py-2.5 flex items-end gap-2 sticky bottom-0">
         <div className="flex-1 bg-white rounded-full px-4 py-2.5 flex items-center">
           <input
