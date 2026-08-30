@@ -21,6 +21,11 @@ type DetailIssue = {
   suggestion?: string;
 };
 
+type ProductOptionValue = {
+  name: string;
+  value: string;
+};
+
 const VALID_FIELDS: DetailField[] = [
   'customerName',
   'customerPhone',
@@ -52,6 +57,18 @@ function normalizeCity(value: string): string {
 
 function normalizePhone(value: string): string {
   return String(value || '').replace(/\D/g, '');
+}
+
+function normalizeProductOptions(value: unknown): ProductOptionValue[] {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .slice(0, 10)
+    .map(option => ({
+      name: normalizeSpaces(String(option?.name || '')).slice(0, 80),
+      value: normalizeSpaces(String(option?.value || '')).slice(0, 120),
+    }))
+    .filter(option => option.name && option.value);
 }
 
 function levenshtein(a: string, b: string): number {
@@ -126,24 +143,15 @@ function validateDetails(details: Partial<OrderDetails>): {
   const issues: DetailIssue[] = [];
 
   if (!isValidName(data.customerName)) {
-    issues.push({
-      field: 'customerName',
-      reason: 'Poora naam first aur last name ke saath likhein.',
-    });
+    issues.push({ field: 'customerName', reason: 'Poora naam first aur last name ke saath likhein.' });
   }
 
   if (!isValidPhone(data.customerPhone)) {
-    issues.push({
-      field: 'customerPhone',
-      reason: '11-digit Pakistani mobile number dein jo 03 se start ho.',
-    });
+    issues.push({ field: 'customerPhone', reason: '11-digit Pakistani mobile number dein jo 03 se start ho.' });
   }
 
   if (!isValidCity(data.customerCity)) {
-    issues.push({
-      field: 'customerCity',
-      reason: 'City ka sahi naam likhein.',
-    });
+    issues.push({ field: 'customerCity', reason: 'City ka sahi naam likhein.' });
   } else {
     const suggestion = getCitySuggestion(data.customerCity);
     if (suggestion) {
@@ -197,10 +205,7 @@ or
 {"valid":false,"issues":[{"field":"customerCity","reason":"...","suggestion":"Karachi"}]}
 Allowed field values: customerName, customerPhone, customerCity, customerAddress.`,
     },
-    {
-      role: 'user',
-      content: JSON.stringify(details),
-    },
+    { role: 'user', content: JSON.stringify(details) },
   ];
 
   try {
@@ -230,18 +235,25 @@ function getChatPrompt(productInfo: {
   color?: string;
   size?: string;
   price?: string;
+  selectedOptions?: ProductOptionValue[];
 }): string {
+  const options = normalizeProductOptions(productInfo.selectedOptions)
+    .map(option => `${option.name}: ${option.value}`)
+    .join(', ');
+
   return `You are Sparrow, the concise sales assistant for Sparrow Official, a Pakistani clothing brand. Reply in natural Roman Urdu mixed with simple English and use respectful Aap/Ji language.
 
 CURRENT PRODUCT:
 Product: ${productInfo.productName || 'Selected Product'}
+${options ? `Selected options: ${options}` : ''}
 ${productInfo.color ? `Color: ${productInfo.color}` : ''}
 ${productInfo.size ? `Size: ${productInfo.size}` : ''}
 ${productInfo.price ? `Price: Rs.${productInfo.price}` : ''}
 
-The website has a separate delivery-details form. Do NOT collect name, phone, city or address one-by-one in chat. If the customer wants to order, tell them to fill the details form shown in the chat.
+The website has a separate product-options and delivery-details form. Do NOT collect name, phone, city or address one-by-one in chat. If the customer wants to order, tell them to use the form shown in the chat.
 Do not invent product facts, stock, price, fees or policies.
-Delivery policy: Cash on Delivery all over Pakistan; next-day delivery in major cities.
+Payment: Cash on Delivery and advance payment are both available.
+Delivery policy: delivery is available across Pakistan; next-day delivery is available in major cities where applicable.
 Exchange policy: 7 days easy exchange for size issues.
 Keep answers short, usually 1-3 sentences.`;
 }
@@ -256,14 +268,23 @@ async function saveOrder({
   details: OrderDetails;
 }) {
   const chatHistory = sessions[sessionId] || [];
+  const productOptions = normalizeProductOptions(productInfo?.selectedOptions);
+  const color = productOptions.find(option => /colou?r/i.test(option.name))?.value || productInfo?.color || null;
+  const size = productOptions.find(option => /size/i.test(option.name))?.value || productInfo?.size || null;
 
   const order = await db.order.create({
     data: {
       sessionId,
-      productName: productInfo?.productName || 'Unknown Product',
-      color: productInfo?.color || null,
-      size: productInfo?.size || null,
-      price: productInfo?.price || null,
+      productName: normalizeSpaces(productInfo?.productName || 'Unknown Product').slice(0, 200),
+      productId: productInfo?.productId ? String(productInfo.productId).slice(0, 100) : null,
+      productHandle: productInfo?.productHandle ? String(productInfo.productHandle).slice(0, 180) : null,
+      variantId: productInfo?.variantId ? String(productInfo.variantId).slice(0, 100) : null,
+      productUrl: productInfo?.productUrl ? String(productInfo.productUrl).slice(0, 1000) : null,
+      productImage: productInfo?.image ? String(productInfo.image).slice(0, 1000) : null,
+      productOptions,
+      color,
+      size,
+      price: productInfo?.price ? String(productInfo.price).slice(0, 50) : null,
       customerName: details.customerName,
       customerPhone: details.customerPhone,
       customerCity: details.customerCity,
@@ -274,7 +295,6 @@ async function saveOrder({
   });
 
   const notifications = await sendOrderWhatsAppNotifications(order);
-
   delete sessions[sessionId];
 
   return {
@@ -284,6 +304,7 @@ async function saveOrder({
     customerCity: order.customerCity,
     customerAddress: order.customerAddress,
     productName: order.productName,
+    productOptions: order.productOptions,
     color: order.color,
     size: order.size,
     price: order.price,
@@ -369,14 +390,13 @@ export async function POST(request: NextRequest) {
     const userTurns = sessions[sessionId].filter(item => item.role === 'user').length;
     if (userTurns >= MAX_USER_TURNS) {
       return NextResponse.json({
-        reply: 'Chat limit complete ho gayi hai. Order ke liye delivery details form fill kar dein.',
+        reply: 'Chat limit complete ho gayi hai. Order ke liye product options aur delivery details form fill kar dein.',
         orderComplete: false,
       });
     }
 
     sessions[sessionId].push({ role: 'user', content: String(message) });
 
-    // Keep only the latest few turns to reduce Groq token usage.
     const recentHistory = sessions[sessionId].slice(-6);
     const llmMessages: AIMessage[] = [
       { role: 'system', content: getChatPrompt(productInfo || {}) },
@@ -386,10 +406,7 @@ export async function POST(request: NextRequest) {
     const aiReply = await callAI(llmMessages);
     sessions[sessionId].push({ role: 'assistant', content: aiReply });
 
-    return NextResponse.json({
-      reply: aiReply,
-      orderComplete: false,
-    });
+    return NextResponse.json({ reply: aiReply, orderComplete: false });
   } catch (error: unknown) {
     console.error('Chat API error:', error);
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
