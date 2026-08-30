@@ -12,6 +12,7 @@ type WhatsAppOrder = {
 
 type SendResult = {
   sent: boolean;
+  skipped?: boolean;
   error?: string;
 };
 
@@ -229,7 +230,7 @@ export async function sendOrderWhatsAppNotifications(
     amount,
   ];
 
-  const customerPromise = customerNumber
+  const customerPromise: Promise<SendResult> = customerNumber
     ? sendTemplateOrText({
         to: customerNumber,
         templateName: configuredCustomerTemplate,
@@ -238,14 +239,23 @@ export async function sendOrderWhatsAppNotifications(
       })
     : Promise.resolve({ sent: false, error: 'Customer phone number is missing' });
 
-  const ownerPromise = ownerNumber
+  // Owner/admin notification is optional. During Meta test mode the same phone
+  // is often used as both customer and owner; skip the duplicate second send.
+  const shouldSendOwner = Boolean(ownerNumber && ownerNumber !== customerNumber);
+  const ownerPromise: Promise<SendResult> = shouldSendOwner
     ? sendTemplateOrText({
         to: ownerNumber,
         templateName: configuredOwnerTemplate,
         templateParameters: ownerTemplateParameters,
         text: ownerText,
       })
-    : Promise.resolve({ sent: false, error: 'WHATSAPP_ORDER_RECIPIENT is missing' });
+    : Promise.resolve({
+        sent: false,
+        skipped: true,
+        error: ownerNumber
+          ? 'Owner number matches customer number; duplicate notification skipped'
+          : 'Owner notification not configured',
+      });
 
   const [customerResult, ownerResult] = await Promise.all([
     customerPromise,
@@ -260,7 +270,9 @@ export async function sendOrderWhatsAppNotifications(
     );
   }
 
-  if (!ownerResult.sent) {
+  if (ownerResult.skipped) {
+    console.info(`Owner WhatsApp notification skipped: ${ownerResult.error}`);
+  } else if (!ownerResult.sent) {
     console.error('Owner WhatsApp notification failed:', ownerResult.error);
   } else {
     console.info(
