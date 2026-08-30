@@ -18,6 +18,9 @@ type OrderRecord = {
   color: string | null;
   size: string | null;
   price: string | null;
+  shippingPrice: string | null;
+  shippingRateName: string | null;
+  totalPrice: string | null;
   quantity: string | null;
   customerName: string | null;
   customerPhone: string | null;
@@ -45,6 +48,9 @@ type CreateOrderData = Partial<
     | 'color'
     | 'size'
     | 'price'
+    | 'shippingPrice'
+    | 'shippingRateName'
+    | 'totalPrice'
     | 'quantity'
     | 'customerName'
     | 'customerPhone'
@@ -118,6 +124,9 @@ function serializeOrder(document: OrderDocument): OrderRecord {
     productUrl: order.productUrl ?? null,
     productImage: order.productImage ?? null,
     productOptions: order.productOptions ?? null,
+    shippingPrice: order.shippingPrice ?? null,
+    shippingRateName: order.shippingRateName ?? null,
+    totalPrice: order.totalPrice ?? null,
   };
 }
 
@@ -139,6 +148,9 @@ export const db = {
         color: data.color ?? null,
         size: data.size ?? null,
         price: data.price ?? null,
+        shippingPrice: data.shippingPrice ?? null,
+        shippingRateName: data.shippingRateName ?? null,
+        totalPrice: data.totalPrice ?? null,
         quantity: data.quantity ?? null,
         customerName: data.customerName ?? null,
         customerPhone: data.customerPhone ?? null,
