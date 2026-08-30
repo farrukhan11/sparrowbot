@@ -1,7 +1,18 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, ShoppingBag, User, MapPin, Phone, CheckCircle2, MessageCircle, Loader2, ShieldCheck, Truck } from 'lucide-react';
+import {
+  Send,
+  ShoppingBag,
+  User,
+  MapPin,
+  Phone,
+  CheckCircle2,
+  MessageCircle,
+  Loader2,
+  ShieldCheck,
+  Pencil,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
 import BrandLogo from '@/components/BrandLogo';
@@ -20,12 +31,23 @@ interface ProductInfo {
   price?: string;
 }
 
-interface OrderData {
-  id: string;
+interface CustomerDetails {
   customerName: string;
   customerPhone: string;
   customerCity: string;
   customerAddress: string;
+}
+
+type DetailField = keyof CustomerDetails;
+
+interface DetailIssue {
+  field: DetailField;
+  reason: string;
+  suggestion?: string;
+}
+
+interface OrderData extends CustomerDetails {
+  id: string;
   productName: string;
   color: string | null;
   size: string | null;
@@ -33,6 +55,13 @@ interface OrderData {
   customerWhatsAppSent?: boolean;
   ownerWhatsAppSent?: boolean;
 }
+
+const emptyDetails: CustomerDetails = {
+  customerName: '',
+  customerPhone: '',
+  customerCity: '',
+  customerAddress: '',
+};
 
 function getTimeString(): string {
   return new Date().toLocaleTimeString('en-US', {
@@ -45,9 +74,7 @@ function getTimeString(): string {
 function ChatHeader({ subtitle }: { subtitle: string }) {
   return (
     <header className="bg-[#075e54] text-white px-4 py-3 flex items-center gap-3 shadow-md">
-      <div className="rounded-full bg-white p-1 shadow-sm">
-        <BrandLogo size="sm" />
-      </div>
+      <BrandLogo size="sm" />
       <div>
         <h1 className="font-bold text-base">Sparrow Official</h1>
         <p className="text-xs text-green-200 flex items-center gap-1">
@@ -59,6 +86,18 @@ function ChatHeader({ subtitle }: { subtitle: string }) {
   );
 }
 
+function DetailRow({ label, value, icon }: { label: string; value: string; icon: React.ReactNode }) {
+  return (
+    <div className="flex items-start gap-3 rounded-xl bg-gray-50 p-3">
+      <div className="mt-0.5 text-gray-500">{icon}</div>
+      <div className="min-w-0">
+        <p className="text-[11px] text-gray-500">{label}</p>
+        <p className="text-sm font-semibold text-gray-900 break-words">{value}</p>
+      </div>
+    </div>
+  );
+}
+
 export default function OrderChat({ productInfo, sessionId }: { productInfo: ProductInfo; sessionId: string }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -66,9 +105,32 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
   const [orderData, setOrderData] = useState<OrderData | null>(null);
   const [showOrderSummary, setShowOrderSummary] = useState(false);
   const [isStarted, setIsStarted] = useState(false);
+
+  const [details, setDetails] = useState<CustomerDetails>(emptyDetails);
+  const [issues, setIssues] = useState<DetailIssue[]>([]);
+  const [showDetailsForm, setShowDetailsForm] = useState(false);
+  const [verifiedDetails, setVerifiedDetails] = useState<CustomerDetails | null>(null);
+  const [awaitingConfirmation, setAwaitingConfirmation] = useState(false);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
+  const phoneRef = useRef<HTMLInputElement>(null);
+  const cityRef = useRef<HTMLInputElement>(null);
+  const addressRef = useRef<HTMLTextAreaElement>(null);
   const { toast } = useToast();
+
+  const appendMessage = useCallback((text: string, sender: 'user' | 'bot') => {
+    setMessages(prev => [
+      ...prev,
+      {
+        id: `${sender}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        text,
+        sender,
+        time: getTimeString(),
+      },
+    ]);
+  }, []);
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -76,19 +138,36 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, scrollToBottom]);
+  }, [messages, showDetailsForm, awaitingConfirmation, scrollToBottom]);
+
+  // Focus only after React has re-rendered the enabled field. The old code tried
+  // to focus while the input was still disabled during loading, so focus failed.
+  useEffect(() => {
+    if (!isStarted || isLoading || showOrderSummary) return;
+
+    const timer = window.setTimeout(() => {
+      if (showDetailsForm) {
+        const firstIssue = issues[0]?.field;
+        if (firstIssue === 'customerPhone') phoneRef.current?.focus();
+        else if (firstIssue === 'customerCity') cityRef.current?.focus();
+        else if (firstIssue === 'customerAddress') addressRef.current?.focus();
+        else nameRef.current?.focus();
+        return;
+      }
+
+      if (!awaitingConfirmation) {
+        inputRef.current?.focus({ preventScroll: true });
+      }
+    }, 80);
+
+    return () => window.clearTimeout(timer);
+  }, [isStarted, isLoading, showOrderSummary, showDetailsForm, awaitingConfirmation, issues, messages.length]);
 
   const sendMessage = useCallback(async (text: string) => {
     if (!text.trim() || isLoading) return;
 
-    const userMsg: Message = {
-      id: `user-${Date.now()}`,
-      text: text.trim(),
-      sender: 'user',
-      time: getTimeString(),
-    };
-
-    setMessages(prev => [...prev, userMsg]);
+    const trimmed = text.trim();
+    appendMessage(trimmed, 'user');
     setInput('');
     setIsLoading(true);
 
@@ -97,36 +176,18 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: text.trim(),
+          message: trimmed,
           sessionId,
           productInfo,
         }),
       });
 
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      if (!res.ok || data.error) throw new Error(data.error || 'Request failed');
 
-      const botMsg: Message = {
-        id: `bot-${Date.now()}`,
-        text: data.reply,
-        sender: 'bot',
-        time: getTimeString(),
-      };
-
-      setMessages(prev => [...prev, botMsg]);
-
-      if (data.orderComplete && data.order) {
-        setOrderData(data.order);
-        setTimeout(() => setShowOrderSummary(true), 1200);
-      }
+      appendMessage(data.reply, 'bot');
     } catch {
-      const errorMsg: Message = {
-        id: `err-${Date.now()}`,
-        text: 'Oops! Kuch technical issue aa gaya. Please thodi der baad try karein. 🙏',
-        sender: 'bot',
-        time: getTimeString(),
-      };
-      setMessages(prev => [...prev, errorMsg]);
+      appendMessage('Oops! Kuch technical issue aa gaya. Please thodi der baad try karein. 🙏', 'bot');
       toast({
         title: 'Error',
         description: 'Message send nahi ho saka. Please try again.',
@@ -134,96 +195,181 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
       });
     } finally {
       setIsLoading(false);
-      inputRef.current?.focus();
     }
-  }, [isLoading, sessionId, productInfo, toast]);
+  }, [appendMessage, isLoading, productInfo, sessionId, toast]);
 
   const handleStart = () => {
     setIsStarted(true);
-    sendMessage('hi');
+    setShowDetailsForm(true);
+    setMessages([
+      {
+        id: `bot-${Date.now()}`,
+        sender: 'bot',
+        time: getTimeString(),
+        text: `Assalam o Alaikum! ${productInfo.productName} order karne ke liye neeche apni 4 delivery details ek hi dafa fill kar dein. Main sab details verify karke sirf agar koi cheez doubtful hui to aap se correct karwaunga.`,
+      },
+    ]);
+  };
+
+  const updateDetail = (field: DetailField, value: string) => {
+    setDetails(prev => ({ ...prev, [field]: value }));
+    setIssues(prev => prev.filter(issue => issue.field !== field));
+    setVerifiedDetails(null);
+  };
+
+  const issueFor = (field: DetailField) => issues.find(issue => issue.field === field);
+
+  const submitDetails = async () => {
+    if (isLoading) return;
+    setIsLoading(true);
+    setIssues([]);
+
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'verify_details',
+          sessionId,
+          productInfo,
+          details,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || 'Verification failed');
+
+      if (data.details) setDetails(data.details);
+      appendMessage(data.reply, 'bot');
+
+      if (data.needsCorrection) {
+        setIssues(data.issues || []);
+        setShowDetailsForm(true);
+        setAwaitingConfirmation(false);
+        return;
+      }
+
+      if (data.detailsVerified && data.details) {
+        setVerifiedDetails(data.details);
+        setShowDetailsForm(false);
+        setAwaitingConfirmation(true);
+      }
+    } catch {
+      appendMessage('Details verify nahi ho sakin. Please dobara try karein.', 'bot');
+      toast({
+        title: 'Verification failed',
+        description: 'Please details check karke dobara try karein.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const confirmOrder = async () => {
+    if (!verifiedDetails || isLoading) return;
+    setIsLoading(true);
+
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'confirm_order',
+          sessionId,
+          productInfo,
+          details: verifiedDetails,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || 'Order failed');
+
+      if (data.needsCorrection) {
+        setDetails(data.details || verifiedDetails);
+        setIssues(data.issues || []);
+        setShowDetailsForm(true);
+        setAwaitingConfirmation(false);
+        appendMessage(data.reply, 'bot');
+        return;
+      }
+
+      if (data.orderComplete && data.order) {
+        appendMessage(data.reply, 'bot');
+        setOrderData(data.order);
+        setAwaitingConfirmation(false);
+        window.setTimeout(() => setShowOrderSummary(true), 500);
+      }
+    } catch {
+      appendMessage('Order confirm nahi ho saka. Please dobara try karein.', 'bot');
+      toast({
+        title: 'Order failed',
+        description: 'Please dobara confirm karein.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const editDetails = () => {
+    if (verifiedDetails) setDetails(verifiedDetails);
+    setAwaitingConfirmation(false);
+    setShowDetailsForm(true);
+    setIssues([]);
   };
 
   const handleNewOrder = () => window.location.reload();
 
   if (!isStarted) {
     return (
-      <div className="min-h-screen flex flex-col bg-[#f4f1eb]">
+      <div className="min-h-screen flex flex-col bg-[#eae6df]">
         <ChatHeader subtitle="Online — Order Assistant" />
 
-        <main className="flex-1 flex items-center justify-center px-4 py-8 sm:py-12">
-          <div className="w-full max-w-md">
-            <section className="overflow-hidden rounded-[28px] border border-black/5 bg-white shadow-[0_18px_55px_rgba(0,0,0,0.10)]">
-              <div className="px-7 pt-7 pb-6 text-center">
-                <div className="flex justify-center mb-3">
-                  <BrandLogo size="lg" />
-                </div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#075e54]/70">
-                  Sparrow Official
-                </p>
-                <h1 className="mt-2 text-xl font-bold text-gray-950">Complete Your Order</h1>
-                <p className="mt-1 text-sm leading-5 text-gray-500">
-                  Hamara AI assistant aapki delivery details securely collect karega.
-                </p>
-              </div>
+        <main className="flex-1 flex items-center justify-center px-4 py-8">
+          <div className="w-full max-w-md rounded-3xl bg-white p-7 shadow-xl shadow-black/10">
+            <div className="flex justify-center">
+              <BrandLogo size="lg" className="ring-2 ring-[#075e54]/10" />
+            </div>
 
-              <div className="mx-5 rounded-2xl border border-[#075e54]/10 bg-[#f7fbf9] p-4">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#075e54] text-white shadow-sm">
-                    <ShoppingBag className="h-5 w-5" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400">Your Product</p>
-                    <h2 className="truncate text-base font-bold text-gray-950">{productInfo.productName}</h2>
-                  </div>
-                  {productInfo.price && (
-                    <div className="shrink-0 text-right">
-                      <p className="text-[10px] text-gray-400">Price</p>
-                      <p className="text-sm font-bold text-[#075e54]">Rs.{productInfo.price}</p>
-                    </div>
+            <div className="mt-5 text-center">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#075e54]">Ready to order</p>
+              <h2 className="mt-2 text-xl font-bold text-gray-950">{productInfo.productName}</h2>
+
+              {(productInfo.color || productInfo.size) && (
+                <div className="mt-3 flex flex-wrap justify-center gap-2">
+                  {productInfo.color && (
+                    <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700">{productInfo.color}</span>
+                  )}
+                  {productInfo.size && (
+                    <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700">Size {productInfo.size}</span>
                   )}
                 </div>
+              )}
 
-                {(productInfo.color || productInfo.size) && (
-                  <div className="mt-3 flex flex-wrap gap-2 border-t border-[#075e54]/10 pt-3">
-                    {productInfo.color && (
-                      <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-gray-600 shadow-sm ring-1 ring-black/5">
-                        {productInfo.color}
-                      </span>
-                    )}
-                    {productInfo.size && (
-                      <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-gray-600 shadow-sm ring-1 ring-black/5">
-                        Size: {productInfo.size}
-                      </span>
-                    )}
-                  </div>
-                )}
-              </div>
+              {productInfo.price && <p className="mt-3 text-2xl font-extrabold text-[#075e54]">Rs.{productInfo.price}</p>}
+            </div>
 
-              <div className="px-5 pb-5 pt-5">
-                <Button
-                  onClick={handleStart}
-                  className="h-13 w-full rounded-2xl bg-[#075e54] py-6 text-base font-bold text-white shadow-md transition-all hover:bg-[#064e46] active:scale-[0.99]"
-                >
-                  <MessageCircle className="mr-2 h-5 w-5" />
-                  Start Order Chat
-                </Button>
+            <div className="my-6 h-px bg-gray-100" />
 
-                <div className="mt-4 grid grid-cols-2 gap-2">
-                  <div className="flex items-center justify-center gap-1.5 rounded-xl bg-gray-50 px-2 py-2 text-[11px] font-medium text-gray-500">
-                    <ShieldCheck className="h-3.5 w-3.5 text-[#075e54]" />
-                    Secure details
-                  </div>
-                  <div className="flex items-center justify-center gap-1.5 rounded-xl bg-gray-50 px-2 py-2 text-[11px] font-medium text-gray-500">
-                    <Truck className="h-3.5 w-3.5 text-[#075e54]" />
-                    Cash on Delivery
-                  </div>
-                </div>
-              </div>
-            </section>
+            <div className="rounded-2xl bg-[#f7faf9] px-4 py-3 text-center">
+              <p className="text-sm leading-5 text-gray-600">
+                Apni delivery details ek hi dafa fill karein. AI verify karega aur sirf doubtful detail dobara poochega.
+              </p>
+            </div>
 
-            <p className="mt-5 text-center text-xs text-gray-400">
-              Fast checkout • WhatsApp confirmation
-            </p>
+            <Button
+              onClick={handleStart}
+              className="mt-5 h-12 w-full rounded-xl bg-[#25d366] text-base font-bold text-white hover:bg-[#1ebe57]"
+            >
+              <MessageCircle className="mr-2 h-5 w-5" />
+              Start Order
+            </Button>
+
+            <div className="mt-5 flex items-center justify-center gap-2 text-xs text-gray-500">
+              <ShieldCheck className="h-4 w-4 text-[#075e54]" />
+              <span>Cash on Delivery • Secure Order</span>
+            </div>
           </div>
         </main>
       </div>
@@ -233,86 +379,48 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
   if (showOrderSummary && orderData) {
     return (
       <div className="min-h-screen flex flex-col bg-[#eae6df]">
-        <ChatHeader subtitle="Order Confirmed — Thank you for shopping" />
+        <ChatHeader subtitle="Order Confirmed" />
 
-        <div className="flex-1 flex flex-col items-center justify-center px-4 py-8">
-          <div className="bg-white rounded-2xl shadow-lg p-6 max-w-sm w-full">
-            <div className="text-center mb-5">
-              <div className="flex justify-center mb-3">
-                <BrandLogo size="lg" />
+        <main className="flex-1 flex items-center justify-center px-4 py-8">
+          <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-xl shadow-black/10">
+            <div className="text-center">
+              <BrandLogo size="lg" className="mx-auto ring-2 ring-[#25d366]/20" />
+              <div className="mt-4 flex items-center justify-center gap-2">
+                <CheckCircle2 className="h-5 w-5 text-[#25d366]" />
+                <h2 className="text-lg font-bold text-gray-900">Order Confirm Ho Gaya!</h2>
               </div>
-              <div className="flex items-center justify-center gap-2">
-                <CheckCircle2 className="w-5 h-5 text-[#25d366]" />
-                <h2 className="font-bold text-lg text-gray-900">Order Confirm Ho Gaya!</h2>
-              </div>
-              <p className="text-xs text-gray-500 mt-1">
-                Aapka Order ID: <span className="font-mono font-bold">{orderData.id.slice(0, 8).toUpperCase()}</span>
+              <p className="mt-1 text-xs text-gray-500">
+                Order ID: <span className="font-mono font-bold text-gray-800">{orderData.id.slice(0, 8).toUpperCase()}</span>
               </p>
               {orderData.customerWhatsAppSent && (
-                <p className="text-xs text-[#075e54] mt-2 font-medium">
-                  Confirmation aapke WhatsApp par bhej di gayi hai.
-                </p>
+                <p className="mt-2 text-xs font-medium text-[#075e54]">Confirmation WhatsApp par bhej di gayi hai.</p>
               )}
             </div>
 
-            <div className="space-y-3">
-              <div className="flex items-start gap-3 p-3 bg-gray-50 rounded-xl">
-                <ShoppingBag className="w-4 h-4 text-gray-500 mt-0.5 flex-shrink-0" />
-                <div>
-                  <p className="text-xs text-gray-500">Product</p>
-                  <p className="text-sm font-semibold text-gray-900">{orderData.productName}</p>
-                  <div className="flex gap-2 mt-1">
-                    {orderData.color && <span className="text-xs text-gray-600">{orderData.color}</span>}
-                    {orderData.size && <span className="text-xs text-gray-600">• Size: {orderData.size}</span>}
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-3 p-3 bg-gray-50 rounded-xl">
-                <User className="w-4 h-4 text-gray-500 mt-0.5 flex-shrink-0" />
-                <div>
-                  <p className="text-xs text-gray-500">Customer</p>
-                  <p className="text-sm font-semibold text-gray-900">{orderData.customerName}</p>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-3 p-3 bg-gray-50 rounded-xl">
-                <Phone className="w-4 h-4 text-gray-500 mt-0.5 flex-shrink-0" />
-                <div>
-                  <p className="text-xs text-gray-500">Phone</p>
-                  <p className="text-sm font-semibold text-gray-900">{orderData.customerPhone}</p>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-3 p-3 bg-gray-50 rounded-xl">
-                <MapPin className="w-4 h-4 text-gray-500 mt-0.5 flex-shrink-0" />
-                <div>
-                  <p className="text-xs text-gray-500">Delivery Address</p>
-                  <p className="text-sm font-semibold text-gray-900">{orderData.customerCity}</p>
-                  <p className="text-xs text-gray-600">{orderData.customerAddress}</p>
-                </div>
-              </div>
-
+            <div className="mt-5 space-y-3">
+              <DetailRow label="Product" value={orderData.productName} icon={<ShoppingBag className="h-4 w-4" />} />
+              <DetailRow label="Customer" value={orderData.customerName} icon={<User className="h-4 w-4" />} />
+              <DetailRow label="Phone" value={orderData.customerPhone} icon={<Phone className="h-4 w-4" />} />
+              <DetailRow
+                label="Delivery Address"
+                value={`${orderData.customerCity} — ${orderData.customerAddress}`}
+                icon={<MapPin className="h-4 w-4" />}
+              />
               {orderData.price && (
-                <div className="flex items-center justify-between p-3 bg-[#25d366]/5 rounded-xl border border-[#25d366]/20">
+                <div className="flex items-center justify-between rounded-xl border border-[#25d366]/20 bg-[#25d366]/5 p-3">
                   <span className="text-sm font-semibold text-gray-700">Total Amount</span>
                   <span className="text-lg font-bold text-[#075e54]">Rs.{orderData.price}</span>
                 </div>
               )}
             </div>
 
-            <p className="text-xs text-gray-400 text-center mt-5">
-              Aapka order successfully receive ho gaya hai. Order ID save kar lein.
-            </p>
+            <p className="mt-5 text-center text-xs text-gray-400">Order ID save kar lein.</p>
           </div>
 
-          <button
-            onClick={handleNewOrder}
-            className="mt-6 text-sm text-[#075e54] font-medium underline underline-offset-2"
-          >
-            Nayi order karein
+          <button onClick={handleNewOrder} className="absolute bottom-8 text-sm font-medium text-[#075e54] underline underline-offset-2">
+            Naya order karein
           </button>
-        </div>
+        </main>
       </div>
     );
   }
@@ -323,50 +431,169 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
         <ChatHeader subtitle="Online" />
       </div>
 
-      <div className="bg-white border-b px-4 py-2.5 flex items-center gap-3">
-        <div className="w-12 h-12 bg-[#f0f0f0] rounded-lg flex items-center justify-center flex-shrink-0">
-          <ShoppingBag className="w-5 h-5 text-gray-400" />
+      <div className="border-b bg-white px-4 py-2.5 flex items-center gap-3">
+        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gray-100">
+          <ShoppingBag className="h-4 w-4 text-gray-500" />
         </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-gray-900 truncate">{productInfo.productName}</p>
-          <div className="flex items-center gap-2">
-            {productInfo.color && <span className="text-xs text-gray-500">{productInfo.color}</span>}
-            {productInfo.size && <span className="text-xs text-gray-500">• {productInfo.size}</span>}
-            {productInfo.price && <span className="text-xs font-bold text-[#075e54]">Rs.{productInfo.price}</span>}
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-semibold text-gray-900">{productInfo.productName}</p>
+          <div className="flex items-center gap-2 text-xs text-gray-500">
+            {productInfo.color && <span>{productInfo.color}</span>}
+            {productInfo.size && <span>• {productInfo.size}</span>}
+            {productInfo.price && <span className="font-bold text-[#075e54]">Rs.{productInfo.price}</span>}
           </div>
         </div>
       </div>
 
       <div
-        className="flex-1 overflow-y-auto px-3 py-4 space-y-2"
+        className="flex-1 overflow-y-auto px-3 py-4"
         style={{
           backgroundImage: 'url("data:image/svg+xml,%3Csvg width=\'60\' height=\'60\' viewBox=\'0 0 60 60\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cg fill=\'none\' fill-rule=\'evenodd\'%3E%3Cg fill=\'%23d4d0c8\' fill-opacity=\'0.15\'%3E%3Cpath d=\'M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z\'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")',
         }}
       >
-        {messages.map(msg => (
-          <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div
-              className={`max-w-[80%] px-3.5 py-2 rounded-2xl shadow-sm relative ${
-                msg.sender === 'user'
-                  ? 'bg-[#dcf8c6] rounded-br-sm'
-                  : 'bg-white rounded-bl-sm'
-              }`}
+        <div className="space-y-2">
+          {messages.map(msg => (
+            <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+              <div
+                className={`max-w-[85%] rounded-2xl px-3.5 py-2 shadow-sm ${
+                  msg.sender === 'user' ? 'rounded-br-sm bg-[#dcf8c6]' : 'rounded-bl-sm bg-white'
+                }`}
+              >
+                <p className="whitespace-pre-wrap text-sm leading-relaxed text-gray-900">{msg.text}</p>
+                <p className={`mt-1 text-right text-[10px] ${msg.sender === 'user' ? 'text-green-700/60' : 'text-gray-400'}`}>{msg.time}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {showDetailsForm && (
+          <div className="mx-auto mt-5 w-full max-w-xl rounded-2xl border border-gray-200 bg-white p-5 shadow-lg shadow-black/5">
+            <div className="flex items-start gap-3">
+              <div className="rounded-xl bg-[#075e54]/10 p-2 text-[#075e54]">
+                <ShieldCheck className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 className="font-bold text-gray-900">Delivery Details</h3>
+                <p className="mt-0.5 text-xs text-gray-500">Sab details ek hi dafa fill karein — AI ek saath verify karega.</p>
+              </div>
+            </div>
+
+            {issues.length > 0 && (
+              <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3">
+                <p className="text-xs font-semibold text-amber-900">Please highlighted fields check karein:</p>
+                <ul className="mt-1 space-y-1 text-xs text-amber-800">
+                  {issues.map(issue => (
+                    <li key={`${issue.field}-${issue.reason}`}>• {issue.reason}{issue.suggestion ? ` Suggestion: ${issue.suggestion}` : ''}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              <label className="block">
+                <span className="mb-1.5 block text-xs font-semibold text-gray-700">Full Name</span>
+                <input
+                  ref={nameRef}
+                  value={details.customerName}
+                  onChange={e => updateDetail('customerName', e.target.value)}
+                  placeholder="e.g. Farrukh Saleem"
+                  disabled={isLoading}
+                  className={`h-11 w-full rounded-xl border px-3 text-sm outline-none transition focus:ring-2 focus:ring-[#075e54]/20 ${issueFor('customerName') ? 'border-amber-400 bg-amber-50/50' : 'border-gray-200'}`}
+                />
+              </label>
+
+              <label className="block">
+                <span className="mb-1.5 block text-xs font-semibold text-gray-700">Mobile Number</span>
+                <input
+                  ref={phoneRef}
+                  type="tel"
+                  inputMode="numeric"
+                  value={details.customerPhone}
+                  onChange={e => updateDetail('customerPhone', e.target.value)}
+                  placeholder="03XXXXXXXXX"
+                  disabled={isLoading}
+                  className={`h-11 w-full rounded-xl border px-3 text-sm outline-none transition focus:ring-2 focus:ring-[#075e54]/20 ${issueFor('customerPhone') ? 'border-amber-400 bg-amber-50/50' : 'border-gray-200'}`}
+                />
+              </label>
+
+              <label className="block sm:col-span-2">
+                <span className="mb-1.5 block text-xs font-semibold text-gray-700">City</span>
+                <input
+                  ref={cityRef}
+                  value={details.customerCity}
+                  onChange={e => updateDetail('customerCity', e.target.value)}
+                  placeholder="e.g. Karachi"
+                  disabled={isLoading}
+                  className={`h-11 w-full rounded-xl border px-3 text-sm outline-none transition focus:ring-2 focus:ring-[#075e54]/20 ${issueFor('customerCity') ? 'border-amber-400 bg-amber-50/50' : 'border-gray-200'}`}
+                />
+              </label>
+
+              <label className="block sm:col-span-2">
+                <span className="mb-1.5 block text-xs font-semibold text-gray-700">Full Delivery Address</span>
+                <textarea
+                  ref={addressRef}
+                  value={details.customerAddress}
+                  onChange={e => updateDetail('customerAddress', e.target.value)}
+                  placeholder="House/Flat, Street/Sector, Area"
+                  rows={3}
+                  disabled={isLoading}
+                  className={`w-full resize-none rounded-xl border px-3 py-2.5 text-sm outline-none transition focus:ring-2 focus:ring-[#075e54]/20 ${issueFor('customerAddress') ? 'border-amber-400 bg-amber-50/50' : 'border-gray-200'}`}
+                />
+              </label>
+            </div>
+
+            <Button
+              onClick={submitDetails}
+              disabled={isLoading}
+              className="mt-4 h-11 w-full rounded-xl bg-[#075e54] font-bold text-white hover:bg-[#064e46]"
             >
-              <p className="text-sm text-gray-900 whitespace-pre-wrap leading-relaxed">{msg.text}</p>
-              <p className={`text-[10px] mt-1 text-right ${msg.sender === 'user' ? 'text-green-700/60' : 'text-gray-400'}`}>
-                {msg.time}
-              </p>
+              {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-2 h-4 w-4" />}
+              Verify Details
+            </Button>
+          </div>
+        )}
+
+        {awaitingConfirmation && verifiedDetails && (
+          <div className="mx-auto mt-5 w-full max-w-xl rounded-2xl border border-emerald-200 bg-white p-5 shadow-lg shadow-black/5">
+            <div className="flex items-center gap-2 text-emerald-700">
+              <CheckCircle2 className="h-5 w-5" />
+              <h3 className="font-bold">Details Verified</h3>
+            </div>
+            <p className="mt-1 text-xs text-gray-500">Final summary check kar lein. Sahi ho to order confirm karein.</p>
+
+            <div className="mt-4 grid gap-2 sm:grid-cols-2">
+              <DetailRow label="Name" value={verifiedDetails.customerName} icon={<User className="h-4 w-4" />} />
+              <DetailRow label="Phone" value={verifiedDetails.customerPhone} icon={<Phone className="h-4 w-4" />} />
+              <DetailRow label="City" value={verifiedDetails.customerCity} icon={<MapPin className="h-4 w-4" />} />
+              <div className="sm:col-span-2">
+                <DetailRow label="Address" value={verifiedDetails.customerAddress} icon={<MapPin className="h-4 w-4" />} />
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+              <Button
+                onClick={confirmOrder}
+                disabled={isLoading}
+                className="h-11 flex-1 rounded-xl bg-[#25d366] font-bold text-white hover:bg-[#1ebe57]"
+              >
+                {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}
+                Confirm Order
+              </Button>
+              <Button onClick={editDetails} disabled={isLoading} variant="outline" className="h-11 rounded-xl">
+                <Pencil className="mr-2 h-4 w-4" />
+                Edit Details
+              </Button>
             </div>
           </div>
-        ))}
+        )}
 
-        {isLoading && (
-          <div className="flex justify-start">
-            <div className="bg-white px-4 py-3 rounded-2xl rounded-bl-sm shadow-sm">
+        {isLoading && !showDetailsForm && !awaitingConfirmation && (
+          <div className="mt-2 flex justify-start">
+            <div className="rounded-2xl rounded-bl-sm bg-white px-4 py-3 shadow-sm">
               <div className="flex items-center gap-1">
-                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                <div className="h-2 w-2 animate-bounce rounded-full bg-gray-400" />
+                <div className="h-2 w-2 animate-bounce rounded-full bg-gray-400" style={{ animationDelay: '150ms' }} />
+                <div className="h-2 w-2 animate-bounce rounded-full bg-gray-400" style={{ animationDelay: '300ms' }} />
               </div>
             </div>
           </div>
@@ -374,8 +601,8 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
         <div ref={messagesEndRef} />
       </div>
 
-      <div className="bg-[#f0f0f0] px-3 py-2.5 flex items-end gap-2 sticky bottom-0">
-        <div className="flex-1 bg-white rounded-full px-4 py-2.5 flex items-center">
+      <div className="sticky bottom-0 flex items-end gap-2 bg-[#f0f0f0] px-3 py-2.5">
+        <div className="flex flex-1 items-center rounded-full bg-white px-4 py-2.5">
           <input
             ref={inputRef}
             type="text"
@@ -387,18 +614,18 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
                 sendMessage(input);
               }
             }}
-            placeholder="Type a message..."
+            placeholder={showDetailsForm ? 'Product ya delivery ka sawal pooch sakte hain...' : 'Type a message...'}
             disabled={isLoading}
-            className="flex-1 bg-transparent text-sm text-gray-900 placeholder:text-gray-400 outline-none disabled:opacity-50"
+            className="flex-1 bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400 disabled:opacity-50"
           />
         </div>
         <Button
           onClick={() => sendMessage(input)}
           disabled={!input.trim() || isLoading}
           size="icon"
-          className="w-11 h-11 rounded-full bg-[#075e54] hover:bg-[#064e46] text-white flex-shrink-0 transition-all active:scale-95 disabled:opacity-40"
+          className="h-11 w-11 flex-shrink-0 rounded-full bg-[#075e54] text-white hover:bg-[#064e46] disabled:opacity-40"
         >
-          {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+          {isLoading ? <Loader2 className="h-5 w-5 animate-spin" /> : <Send className="h-5 w-5" />}
         </Button>
       </div>
     </div>
