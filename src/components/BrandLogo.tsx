@@ -4,7 +4,7 @@ type BrandLogoProps = {
 };
 
 const sizeClasses = {
-  sm: 'h-10 w-10',
+  sm: 'h-10 w-10 rounded-lg bg-white p-1 shadow-sm',
   md: 'h-14 w-14',
   lg: 'h-24 w-24',
 };
