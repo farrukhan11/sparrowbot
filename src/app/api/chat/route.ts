@@ -4,8 +4,7 @@ import { callAI, type AIMessage } from '@/lib/ai';
 import { sendOrderWhatsAppNotifications } from '@/lib/whatsapp';
 
 const sessions: Record<string, Array<{ role: 'user' | 'assistant'; content: string }>> = {};
-const terminatedSessions = new Set<string>();
-const MAX_USER_TURNS = 15;
+const MAX_USER_TURNS = 10;
 
 type OrderDetails = {
   customerName: string;
@@ -14,75 +13,37 @@ type OrderDetails = {
   customerAddress: string;
 };
 
-type ExpectedField = 'name' | 'phone' | 'city' | 'address' | null;
+type DetailField = keyof OrderDetails;
+
+type DetailIssue = {
+  field: DetailField;
+  reason: string;
+  suggestion?: string;
+};
+
+const VALID_FIELDS: DetailField[] = [
+  'customerName',
+  'customerPhone',
+  'customerCity',
+  'customerAddress',
+];
 
 const PAKISTANI_CITIES = [
-  'karachi',
-  'lahore',
-  'islamabad',
-  'rawalpindi',
-  'faisalabad',
-  'multan',
-  'peshawar',
-  'quetta',
-  'hyderabad',
-  'gujranwala',
-  'sialkot',
-  'bahawalpur',
-  'sargodha',
-  'sukkur',
-  'larkana',
-  'abbottabad',
-  'mardan',
-  'gujrat',
-  'jhelum',
-  'rahim yar khan',
-  'sheikhupura',
-  'kasur',
-  'sahiwal',
-  'okara',
-  'wah cantt',
-  'taxila',
-  'mirpur khas',
-  'nawabshah',
-  'shaheed benazirabad',
-  'dera ghazi khan',
-  'dera ismail khan',
-  'mingora',
-  'swat',
-  'burewala',
-  'chiniot',
-  'jhang',
-  'hafizabad',
-  'kamoke',
-  'khanewal',
-  'muzaffargarh',
-  'vehari',
-  'attock',
-  'chakwal',
-  'murree',
-  'bahawalnagar',
-  'mandi bahauddin',
-  'khushab',
-  'toba tek singh',
-  'jacobabad',
-  'shikarpur',
-  'khairpur',
-  'thatta',
-  'badin',
-  'gwadar',
-  'turbat',
-  'chaman',
-  'zhob',
-  'mansehra',
-  'haripur',
-  'nowshera',
-  'kohat',
-  'bannu',
+  'karachi', 'lahore', 'islamabad', 'rawalpindi', 'faisalabad', 'multan',
+  'peshawar', 'quetta', 'hyderabad', 'gujranwala', 'sialkot', 'bahawalpur',
+  'sargodha', 'sukkur', 'larkana', 'abbottabad', 'mardan', 'gujrat', 'jhelum',
+  'rahim yar khan', 'sheikhupura', 'kasur', 'sahiwal', 'okara', 'wah cantt',
+  'taxila', 'mirpur khas', 'nawabshah', 'shaheed benazirabad',
+  'dera ghazi khan', 'dera ismail khan', 'mingora', 'swat', 'burewala',
+  'chiniot', 'jhang', 'hafizabad', 'kamoke', 'khanewal', 'muzaffargarh',
+  'vehari', 'attock', 'chakwal', 'murree', 'bahawalnagar', 'mandi bahauddin',
+  'khushab', 'toba tek singh', 'jacobabad', 'shikarpur', 'khairpur', 'thatta',
+  'badin', 'gwadar', 'turbat', 'chaman', 'zhob', 'mansehra', 'haripur',
+  'nowshera', 'kohat', 'bannu',
 ];
 
 function normalizeSpaces(value: string): string {
-  return value.trim().replace(/\s+/g, ' ');
+  return String(value || '').trim().replace(/\s+/g, ' ');
 }
 
 function normalizeCity(value: string): string {
@@ -90,7 +51,7 @@ function normalizeCity(value: string): string {
 }
 
 function normalizePhone(value: string): string {
-  return value.replace(/\D/g, '');
+  return String(value || '').replace(/\D/g, '');
 }
 
 function levenshtein(a: string, b: string): number {
@@ -151,315 +112,279 @@ function isValidAddress(value: string): boolean {
   return address.length >= 12 && words.length >= 3 && /\p{L}/u.test(address);
 }
 
-function isConfirmationPrompt(lastAssistantMessage?: string): boolean {
-  if (!lastAssistantMessage) return false;
-  const text = lastAssistantMessage.toLowerCase();
-  return /confirm|confirmation|sahi hai|sahi hain|correct|kehna chah|keh rahe|verify kar|details theek|details sahi|sab theek/.test(
-    text
-  );
-}
+function validateDetails(details: Partial<OrderDetails>): {
+  data: OrderDetails;
+  issues: DetailIssue[];
+} {
+  const data: OrderDetails = {
+    customerName: normalizeSpaces(details.customerName || ''),
+    customerPhone: normalizePhone(details.customerPhone || ''),
+    customerCity: normalizeSpaces(details.customerCity || ''),
+    customerAddress: normalizeSpaces(details.customerAddress || ''),
+  };
 
-function detectExpectedField(lastAssistantMessage?: string): ExpectedField {
-  if (!lastAssistantMessage || isConfirmationPrompt(lastAssistantMessage)) return null;
+  const issues: DetailIssue[] = [];
 
-  const text = lastAssistantMessage.toLowerCase();
-  if (/address|house|flat|street|mukammal address|poora address|full address/.test(text)) return 'address';
-  if (/city|shehar/.test(text)) return 'city';
-  if (/phone|mobile|contact number|mobile number|11-digit/.test(text)) return 'phone';
-  if (/full name|poora naam|pura naam|naam bata|aapka naam/.test(text)) return 'name';
-  return null;
-}
-
-function validateExpectedInput(field: ExpectedField, value: string): string | null {
-  if (!field) return null;
-
-  if (field === 'name' && !isValidName(value)) {
-    return 'Janab, naam verify nahi ho raha. Please apna poora naam first aur last name ke saath likhein.';
+  if (!isValidName(data.customerName)) {
+    issues.push({
+      field: 'customerName',
+      reason: 'Poora naam first aur last name ke saath likhein.',
+    });
   }
 
-  if (field === 'phone' && !isValidPhone(value)) {
-    return 'Mobile number sahi nahi lag raha. Please exactly 11 digits ka Pakistani number dein jo 03 se start ho, misal 03341234567.';
+  if (!isValidPhone(data.customerPhone)) {
+    issues.push({
+      field: 'customerPhone',
+      reason: '11-digit Pakistani mobile number dein jo 03 se start ho.',
+    });
   }
 
-  if (field === 'city') {
-    if (!isValidCity(value)) {
-      return 'City ka naam verify nahi ho raha. Please apne shehar ka sahi naam dobara likhein.';
-    }
-
-    const suggestion = getCitySuggestion(value);
+  if (!isValidCity(data.customerCity)) {
+    issues.push({
+      field: 'customerCity',
+      reason: 'City ka sahi naam likhein.',
+    });
+  } else {
+    const suggestion = getCitySuggestion(data.customerCity);
     if (suggestion) {
       const pretty = suggestion.replace(/\b\w/g, char => char.toUpperCase());
-      return `Kya aap ${pretty} kehna chah rahe hain? Please yes/haan keh kar confirm karein, warna exact city name likhein.`;
+      issues.push({
+        field: 'customerCity',
+        reason: `City ka naam unclear lag raha hai. Kya aap ${pretty} kehna chah rahe hain?`,
+        suggestion: pretty,
+      });
     }
   }
 
-  if (field === 'address' && !isValidAddress(value)) {
-    return 'Address incomplete lag raha hai. Please house/flat number, street/sector aur area ke saath mukammal address likhein.';
+  if (!isValidAddress(data.customerAddress)) {
+    issues.push({
+      field: 'customerAddress',
+      reason: 'House/flat number, street/sector aur area ke saath mukammal address likhein.',
+    });
   }
 
-  return null;
+  return { data, issues };
 }
 
-function validateOrderData(data: OrderDetails):
-  | { valid: true; data: OrderDetails }
-  | { valid: false; reply: string } {
-  const customerName = normalizeSpaces(data.customerName || '');
-  const customerPhone = normalizePhone(data.customerPhone || '');
-  const customerCity = normalizeSpaces(data.customerCity || '');
-  const customerAddress = normalizeSpaces(data.customerAddress || '');
-
-  if (!isValidName(customerName)) {
-    return {
-      valid: false,
-      reply: 'Order complete karne se pehle full name verify karna zaroori hai. Please first aur last name dono bhejein.',
-    };
-  }
-
-  if (!isValidPhone(customerPhone)) {
-    return {
-      valid: false,
-      reply: 'Mobile number verify nahi hua. Please exactly 11-digit Pakistani number bhejein jo 03 se start ho.',
-    };
-  }
-
-  if (!isValidCity(customerCity)) {
-    return {
-      valid: false,
-      reply: 'City verify nahi ho saki. Please shehar ka sahi naam dobara bhejein.',
-    };
-  }
-
-  const citySuggestion = getCitySuggestion(customerCity);
-  if (citySuggestion) {
-    const pretty = citySuggestion.replace(/\b\w/g, char => char.toUpperCase());
-    return {
-      valid: false,
-      reply: `City ka naam unclear hai. Kya aap ${pretty} kehna chah rahe hain? Please confirm karein.`,
-    };
-  }
-
-  if (!isValidAddress(customerAddress)) {
-    return {
-      valid: false,
-      reply: 'Address incomplete lag raha hai. Please house/flat number, street/sector aur area ke saath mukammal address bhejein.',
-    };
-  }
-
-  return {
-    valid: true,
-    data: {
-      customerName,
-      customerPhone,
-      customerCity,
-      customerAddress,
-    },
-  };
-}
-
-function getSystemPrompt(productInfo: {
-  productName?: string;
-  color?: string;
-  size?: string;
-  price?: string;
-}): string {
-  return `You are "Sparrow", the friendly order assistant for Sparrow Official, a Pakistani clothing brand. Speak natural Roman Urdu mixed with simple English, like a helpful WhatsApp sales assistant.
-
-CURRENT PRODUCT:
-- Product: ${productInfo.productName || 'Selected Product'}
-${productInfo.color ? `- Color: ${productInfo.color}` : ''}
-${productInfo.size ? `- Size: ${productInfo.size}` : ''}
-${productInfo.price ? `- Price: Rs.${productInfo.price}` : ''}
-
-COLLECT THESE 4 DETAILS, ONE AT A TIME:
-1. Full name: at least first + last name
-2. Pakistani mobile number: exactly 11 digits starting with 03
-3. City: clear Pakistani city/town
-4. Full delivery address: house/flat, street/sector and area
-
-VERIFICATION RULES:
-- Never invent, silently repair, or guess customer details.
-- A valid 11-digit 03XXXXXXXXX phone passes verification; do NOT ask the customer to confirm it again. Move to city.
-- A clearly spelled city passes verification; do NOT ask again. If it looks misspelled, ask a yes/no confirmation for your suggested city.
-- If YOU ask a yes/no confirmation and the customer says yes, haan, han, ji, bilkul, correct, theek hai, yup or similar, use the exact value you proposed in your previous message and continue. Do not ask them to type it again.
-- If they say no, ask for the corrected value.
-- After receiving a sufficiently detailed address, show ONE final compact confirmation containing name, phone, city and address, then ask if all details are correct.
-- If the customer confirms that final summary, immediately output order_complete JSON. Do not ask another confirmation.
-
-STYLE:
-- Ask only one thing at a time.
-- Keep replies short, usually 1-3 sentences.
-- Use respectful language: Aap, Ji, Janab. Never use tu/tum.
-- Do not repeatedly confirm already valid fields.
-
-HANDLING ABUSE/OFF-TOPIC:
-- Give one polite warning for abuse. If abuse continues, write a short closing line then on the next line output:
-{"conversation_ended": true, "reason": "abuse"}
-- Redirect off-topic chat back to ordering up to 2 times. If it continues, write a short closing line then output:
-{"conversation_ended": true, "reason": "off_topic"}
-
-STORE RULES:
-- Do not invent prices, stock, delivery fees, policies or product facts.
-- Do not ask size/color/quantity if already supplied in CURRENT PRODUCT.
-- If asked about delivery, say: "Cash on delivery available all over Pakistan! Next day delivery within major cities."
-- If asked about exchange/return, say: "7 days easy exchange policy hai. Size issue ho toh bata dein, replacement bhej dein ge."
-
-WHEN THE FINAL DETAILS ARE CONFIRMED:
-Write one short friendly closing sentence, then on the NEXT line output exactly one raw JSON object with no markdown/code block:
-{"order_complete": true, "customer_name": "...", "customer_phone": "...", "customer_city": "...", "customer_address": "..."}
-
-Never output order_complete before all four values are present and the final details have been confirmed.`;
-}
-
-function parseOrderCompletion(text: string): OrderDetails | null {
-  const jsonMatch = text.match(/\{[\s\S]*"order_complete"[\s\S]*\}/);
-  if (!jsonMatch) return null;
+function parseJsonObject(text: string): any | null {
+  const cleaned = text.replace(/```json/gi, '').replace(/```/g, '').trim();
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start === -1 || end <= start) return null;
 
   try {
-    const parsed = JSON.parse(jsonMatch[0]);
-    if (!parsed.order_complete) return null;
-
-    return {
-      customerName: parsed.customer_name || '',
-      customerPhone: parsed.customer_phone || '',
-      customerCity: parsed.customer_city || '',
-      customerAddress: parsed.customer_address || '',
-    };
+    return JSON.parse(cleaned.slice(start, end + 1));
   } catch {
     return null;
   }
 }
 
+async function auditDetailsWithAI(details: OrderDetails): Promise<DetailIssue[]> {
+  const messages: AIMessage[] = [
+    {
+      role: 'system',
+      content: `You audit Pakistani ecommerce delivery details. Return JSON only, no markdown.
+Do not invent or silently repair any customer value. If anything looks doubtful, mark it as an issue so the customer can correct it.
+Check all four fields:
+- customerName: plausible full human name, normally first + last name, no digits.
+- customerPhone: exactly 11 digits and starts with 03.
+- customerCity: plausible Pakistani city/town. Treat obvious misspellings as doubtful and give a suggestion.
+- customerAddress: realistically deliverable Pakistani address. Accept common formats such as R-57 Sector 15A/4 Buffer Zone; postal code is NOT required. It should contain a house/flat/building identifier plus locality/street/sector/area information.
+Reasons and suggestions must be short Roman Urdu.
+Output exactly:
+{"valid":true,"issues":[]}
+or
+{"valid":false,"issues":[{"field":"customerCity","reason":"...","suggestion":"Karachi"}]}
+Allowed field values: customerName, customerPhone, customerCity, customerAddress.`,
+    },
+    {
+      role: 'user',
+      content: JSON.stringify(details),
+    },
+  ];
+
+  try {
+    const reply = await callAI(messages);
+    const parsed = parseJsonObject(reply);
+
+    if (!parsed || !Array.isArray(parsed.issues)) {
+      console.warn('AI detail audit returned unparseable response; deterministic validation will be used.');
+      return [];
+    }
+
+    return parsed.issues
+      .filter((issue: any) => VALID_FIELDS.includes(issue?.field))
+      .map((issue: any) => ({
+        field: issue.field as DetailField,
+        reason: normalizeSpaces(issue.reason || 'Is detail ko dobara check karein.'),
+        suggestion: issue.suggestion ? normalizeSpaces(issue.suggestion) : undefined,
+      }));
+  } catch (error) {
+    console.error('AI detail audit failed; using deterministic validation fallback:', error);
+    return [];
+  }
+}
+
+function getChatPrompt(productInfo: {
+  productName?: string;
+  color?: string;
+  size?: string;
+  price?: string;
+}): string {
+  return `You are Sparrow, the concise sales assistant for Sparrow Official, a Pakistani clothing brand. Reply in natural Roman Urdu mixed with simple English and use respectful Aap/Ji language.
+
+CURRENT PRODUCT:
+Product: ${productInfo.productName || 'Selected Product'}
+${productInfo.color ? `Color: ${productInfo.color}` : ''}
+${productInfo.size ? `Size: ${productInfo.size}` : ''}
+${productInfo.price ? `Price: Rs.${productInfo.price}` : ''}
+
+The website has a separate delivery-details form. Do NOT collect name, phone, city or address one-by-one in chat. If the customer wants to order, tell them to fill the details form shown in the chat.
+Do not invent product facts, stock, price, fees or policies.
+Delivery policy: Cash on Delivery all over Pakistan; next-day delivery in major cities.
+Exchange policy: 7 days easy exchange for size issues.
+Keep answers short, usually 1-3 sentences.`;
+}
+
+async function saveOrder({
+  sessionId,
+  productInfo,
+  details,
+}: {
+  sessionId: string;
+  productInfo: any;
+  details: OrderDetails;
+}) {
+  const chatHistory = sessions[sessionId] || [];
+
+  const order = await db.order.create({
+    data: {
+      sessionId,
+      productName: productInfo?.productName || 'Unknown Product',
+      color: productInfo?.color || null,
+      size: productInfo?.size || null,
+      price: productInfo?.price || null,
+      customerName: details.customerName,
+      customerPhone: details.customerPhone,
+      customerCity: details.customerCity,
+      customerAddress: details.customerAddress,
+      chatHistory: JSON.stringify(chatHistory),
+      status: 'pending',
+    },
+  });
+
+  const notifications = await sendOrderWhatsAppNotifications(order);
+
+  delete sessions[sessionId];
+
+  return {
+    id: order.id,
+    customerName: order.customerName,
+    customerPhone: order.customerPhone,
+    customerCity: order.customerCity,
+    customerAddress: order.customerAddress,
+    productName: order.productName,
+    color: order.color,
+    size: order.size,
+    price: order.price,
+    customerWhatsAppSent: notifications.customerSent,
+    ownerWhatsAppSent: notifications.ownerSent,
+  };
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { message, sessionId, productInfo } = body;
+    const { action, message, sessionId, productInfo, details } = body;
 
-    if (!message || !sessionId) {
-      return NextResponse.json(
-        { error: 'Message and sessionId are required' },
-        { status: 400 }
-      );
+    if (!sessionId) {
+      return NextResponse.json({ error: 'sessionId is required' }, { status: 400 });
     }
 
-    if (terminatedSessions.has(sessionId)) {
+    if (action === 'verify_details') {
+      const validation = validateDetails(details || {});
+
+      if (validation.issues.length > 0) {
+        return NextResponse.json({
+          reply: 'Kuch details ko dobara check karna hai. Neeche highlighted fields correct kar dein.',
+          orderComplete: false,
+          needsCorrection: true,
+          issues: validation.issues,
+          details: validation.data,
+        });
+      }
+
+      const aiIssues = await auditDetailsWithAI(validation.data);
+
+      if (aiIssues.length > 0) {
+        return NextResponse.json({
+          reply: 'AI verification mein kuch details doubtful lagi hain. Sirf highlighted fields check/correct kar dein.',
+          orderComplete: false,
+          needsCorrection: true,
+          issues: aiIssues,
+          details: validation.data,
+        });
+      }
+
       return NextResponse.json({
-        reply: 'Is chat session ka waqt khatam ho gaya hai. Dobara order karne ke liye product page par wapas jayen.',
+        reply: 'Details verify ho gayi hain. Neeche summary check karke order confirm kar dein.',
         orderComplete: false,
-        sessionEnded: true,
+        detailsVerified: true,
+        details: validation.data,
       });
     }
 
-    if (!sessions[sessionId]) {
-      sessions[sessionId] = [];
+    if (action === 'confirm_order') {
+      const validation = validateDetails(details || {});
+
+      if (validation.issues.length > 0) {
+        return NextResponse.json({
+          reply: 'Confirm karne se pehle kuch details correct karna zaroori hai.',
+          orderComplete: false,
+          needsCorrection: true,
+          issues: validation.issues,
+          details: validation.data,
+        });
+      }
+
+      const order = await saveOrder({
+        sessionId,
+        productInfo: productInfo || {},
+        details: validation.data,
+      });
+
+      return NextResponse.json({
+        reply: 'Shukriya! Aapka order successfully confirm ho gaya hai.',
+        orderComplete: true,
+        order,
+      });
     }
+
+    if (!message) {
+      return NextResponse.json({ error: 'message is required' }, { status: 400 });
+    }
+
+    if (!sessions[sessionId]) sessions[sessionId] = [];
 
     const userTurns = sessions[sessionId].filter(item => item.role === 'user').length;
     if (userTurns >= MAX_USER_TURNS) {
-      terminatedSessions.add(sessionId);
-      delete sessions[sessionId];
       return NextResponse.json({
-        reply: 'Janab, chat limit complete ho gayi hai. Agar order karna ho toh product page se dobara start karein. Shukriya!',
-        orderComplete: false,
-        sessionEnded: true,
-      });
-    }
-
-    const lastAssistantMessage = [...sessions[sessionId]]
-      .reverse()
-      .find(item => item.role === 'assistant')?.content;
-
-    const expectedField = detectExpectedField(lastAssistantMessage);
-    const validationReply = validateExpectedInput(expectedField, String(message));
-
-    if (validationReply) {
-      sessions[sessionId].push({ role: 'user', content: String(message) });
-      sessions[sessionId].push({ role: 'assistant', content: validationReply });
-      return NextResponse.json({
-        reply: validationReply,
+        reply: 'Chat limit complete ho gayi hai. Order ke liye delivery details form fill kar dein.',
         orderComplete: false,
       });
     }
 
     sessions[sessionId].push({ role: 'user', content: String(message) });
 
+    // Keep only the latest few turns to reduce Groq token usage.
+    const recentHistory = sessions[sessionId].slice(-6);
     const llmMessages: AIMessage[] = [
-      { role: 'system', content: getSystemPrompt(productInfo || {}) },
-      ...sessions[sessionId],
+      { role: 'system', content: getChatPrompt(productInfo || {}) },
+      ...recentHistory,
     ];
 
     const aiReply = await callAI(llmMessages);
     sessions[sessionId].push({ role: 'assistant', content: aiReply });
-
-    const endedMatch = aiReply.match(/\{"conversation_ended"\s*:\s*true[^}]*\}/);
-    if (endedMatch) {
-      terminatedSessions.add(sessionId);
-      delete sessions[sessionId];
-      const cleanReply = aiReply.replace(/\{"conversation_ended"[^}]*\}/, '').trim();
-      return NextResponse.json({
-        reply: cleanReply,
-        orderComplete: false,
-        sessionEnded: true,
-      });
-    }
-
-    const parsedOrderData = parseOrderCompletion(aiReply);
-
-    if (parsedOrderData) {
-      const validatedOrder = validateOrderData(parsedOrderData);
-
-      if (!validatedOrder.valid) {
-        sessions[sessionId][sessions[sessionId].length - 1] = {
-          role: 'assistant',
-          content: validatedOrder.reply,
-        };
-
-        return NextResponse.json({
-          reply: validatedOrder.reply,
-          orderComplete: false,
-        });
-      }
-
-      const orderData = validatedOrder.data;
-      const order = await db.order.create({
-        data: {
-          sessionId,
-          productName: productInfo?.productName || 'Unknown Product',
-          color: productInfo?.color || null,
-          size: productInfo?.size || null,
-          price: productInfo?.price || null,
-          customerName: orderData.customerName,
-          customerPhone: orderData.customerPhone,
-          customerCity: orderData.customerCity,
-          customerAddress: orderData.customerAddress,
-          chatHistory: JSON.stringify(sessions[sessionId]),
-          status: 'pending',
-        },
-      });
-
-      const notifications = await sendOrderWhatsAppNotifications(order);
-      const cleanReply = aiReply.replace(/\{[\s\S]*"order_complete"[\s\S]*\}/, '').trim();
-
-      terminatedSessions.add(sessionId);
-      delete sessions[sessionId];
-
-      return NextResponse.json({
-        reply: cleanReply,
-        orderComplete: true,
-        order: {
-          id: order.id,
-          customerName: order.customerName,
-          customerPhone: order.customerPhone,
-          customerCity: order.customerCity,
-          customerAddress: order.customerAddress,
-          productName: order.productName,
-          color: order.color,
-          size: order.size,
-          price: order.price,
-          customerWhatsAppSent: notifications.customerSent,
-          ownerWhatsAppSent: notifications.ownerSent,
-        },
-      });
-    }
 
     return NextResponse.json({
       reply: aiReply,
