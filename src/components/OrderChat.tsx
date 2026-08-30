@@ -76,12 +76,23 @@ interface DetailIssue {
   suggestion?: string;
 }
 
+interface PricingInfo {
+  productPrice: string;
+  shippingPrice: string;
+  totalPrice: string;
+  shippingRateName: string;
+  currency?: string;
+}
+
 interface OrderData extends CustomerDetails {
   id: string;
   productName: string;
   color: string | null;
   size: string | null;
   price: string | null;
+  shippingPrice?: string | null;
+  shippingRateName?: string | null;
+  totalPrice?: string | null;
   productOptions?: SelectedProductOption[] | null;
   customerWhatsAppSent?: boolean;
   ownerWhatsAppSent?: boolean;
@@ -100,6 +111,10 @@ function getTimeString(): string {
     minute: '2-digit',
     hour12: true,
   });
+}
+
+function shippingAmountLabel(value?: string | null): string {
+  return Number(value || 0) === 0 ? 'Free' : `Rs.${value}`;
 }
 
 function ChatHeader({ subtitle }: { subtitle: string }) {
@@ -124,6 +139,30 @@ function DetailRow({ label, value, icon }: { label: string; value: string; icon:
       <div className="min-w-0">
         <p className="text-[11px] text-gray-500">{label}</p>
         <p className="text-sm font-semibold text-gray-900 break-words">{value}</p>
+      </div>
+    </div>
+  );
+}
+
+function PricingBreakdown({ pricing }: { pricing: PricingInfo }) {
+  return (
+    <div className="mt-4 overflow-hidden rounded-xl border border-emerald-100 bg-emerald-50/50">
+      <div className="flex items-center justify-between px-3 py-2.5 text-sm">
+        <span className="text-gray-600">Product Price</span>
+        <span className="font-semibold text-gray-900">Rs.{pricing.productPrice}</span>
+      </div>
+      <div className="flex items-center justify-between border-t border-emerald-100 px-3 py-2.5 text-sm">
+        <div>
+          <span className="text-gray-600">Shipping</span>
+          {pricing.shippingRateName && (
+            <span className="ml-1 text-[11px] text-gray-400">({pricing.shippingRateName})</span>
+          )}
+        </div>
+        <span className="font-semibold text-gray-900">{shippingAmountLabel(pricing.shippingPrice)}</span>
+      </div>
+      <div className="flex items-center justify-between border-t border-emerald-200 bg-white/70 px-3 py-3">
+        <span className="font-bold text-gray-900">Grand Total</span>
+        <span className="text-lg font-extrabold text-[#075e54]">Rs.{pricing.totalPrice}</span>
       </div>
     </div>
   );
@@ -196,6 +235,7 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
   const [showDetailsForm, setShowDetailsForm] = useState(false);
   const [verifiedDetails, setVerifiedDetails] = useState<CustomerDetails | null>(null);
   const [awaitingConfirmation, setAwaitingConfirmation] = useState(false);
+  const [pricing, setPricing] = useState<PricingInfo | null>(null);
   const [productOptionValues, setProductOptionValues] = useState<Record<string, string>>(() =>
     buildInitialOptionValues(productInfo)
   );
@@ -337,12 +377,14 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
     setDetails(prev => ({ ...prev, [field]: value }));
     setIssues(prev => prev.filter(issue => issue.field !== field));
     setVerifiedDetails(null);
+    setPricing(null);
   };
 
   const updateProductOption = (name: string, value: string) => {
     setProductOptionValues(prev => ({ ...prev, [name]: value }));
     setProductOptionError('');
     setVerifiedDetails(null);
+    setPricing(null);
   };
 
   const issueFor = (field: DetailField) => issues.find(issue => issue.field === field);
@@ -387,6 +429,7 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
     if (isLoading || !validateProductOptions()) return;
     setIsLoading(true);
     setIssues([]);
+    setPricing(null);
 
     try {
       const res = await fetch('/api/chat', {
@@ -410,11 +453,13 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
         setIssues(data.issues || []);
         setShowDetailsForm(true);
         setAwaitingConfirmation(false);
+        setPricing(null);
         return;
       }
 
       if (data.detailsVerified && data.details) {
         setVerifiedDetails(data.details);
+        setPricing(data.pricing || null);
         setShowDetailsForm(false);
         setAwaitingConfirmation(true);
       }
@@ -450,6 +495,7 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
         setIssues(data.issues || []);
         setShowDetailsForm(true);
         setAwaitingConfirmation(false);
+        setPricing(null);
         appendMessage(data.reply, 'bot');
         return;
       }
@@ -457,6 +503,7 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
       if (data.orderComplete && data.order) {
         appendMessage(data.reply, 'bot');
         setOrderData(data.order);
+        setPricing(data.pricing || pricing);
         setAwaitingConfirmation(false);
         window.setTimeout(() => setShowOrderSummary(true), 500);
       }
@@ -473,6 +520,7 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
     setAwaitingConfirmation(false);
     setShowDetailsForm(true);
     setIssues([]);
+    setPricing(null);
   };
 
   const handleNewOrder = () => window.location.reload();
@@ -557,6 +605,15 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
   }
 
   if (showOrderSummary && orderData) {
+    const finalPricing: PricingInfo | null = orderData.totalPrice
+      ? {
+          productPrice: orderData.price || '0',
+          shippingPrice: orderData.shippingPrice || '0',
+          shippingRateName: orderData.shippingRateName || 'Shipping',
+          totalPrice: orderData.totalPrice,
+        }
+      : pricing;
+
     return (
       <div className="min-h-screen flex flex-col bg-[#eae6df]">
         <ChatHeader subtitle="Order Confirmed" />
@@ -590,12 +647,7 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
                 value={`${orderData.customerCity} — ${orderData.customerAddress}`}
                 icon={<MapPin className="h-4 w-4" />}
               />
-              {orderData.price && (
-                <div className="flex items-center justify-between rounded-xl border border-[#25d366]/20 bg-[#25d366]/5 p-3">
-                  <span className="text-sm font-semibold text-gray-700">Total Amount</span>
-                  <span className="text-lg font-bold text-[#075e54]">Rs.{orderData.price}</span>
-                </div>
-              )}
+              {finalPricing && <PricingBreakdown pricing={finalPricing} />}
             </div>
 
             <p className="mt-5 text-center text-xs text-gray-400">Order ID save kar lein.</p>
@@ -812,9 +864,10 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
                 <p className="mt-1 text-sm font-semibold text-gray-900">
                   {selectedProductOptions.map(option => `${option.name}: ${option.value}`).join(' • ')}
                 </p>
-                {resolvedProductInfo.price && <p className="mt-1 text-sm font-bold text-[#075e54]">Rs.{resolvedProductInfo.price}</p>}
               </div>
             )}
+
+            {pricing && <PricingBreakdown pricing={pricing} />}
 
             <div className="mt-4 grid gap-2 sm:grid-cols-2">
               <DetailRow label="Name" value={verifiedDetails.customerName} icon={<User className="h-4 w-4" />} />
@@ -828,8 +881,8 @@ export default function OrderChat({ productInfo, sessionId }: { productInfo: Pro
             <div className="mt-4 flex flex-col gap-2 sm:flex-row">
               <Button
                 onClick={confirmOrder}
-                disabled={isLoading || matchedVariant?.available === false}
-                className="h-11 flex-1 rounded-xl bg-[#25d366] font-bold text-white hover:bg-[#1ebe57]"
+                disabled={isLoading || matchedVariant?.available === false || !pricing}
+                className="h-11 flex-1 rounded-xl bg-[#25d366] font-bold text-white hover:bg-[#1ebe57] disabled:bg-gray-300"
               >
                 {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}
                 Confirm Order
