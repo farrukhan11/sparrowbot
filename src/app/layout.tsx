@@ -25,7 +25,14 @@ export const metadata: Metadata = {
   title: "Order Now — Sparrow Official",
   description: "Place your order easily with Sparrow Official. Premium quality clothing delivered to your doorstep.",
   icons: {
-    icon: "/favicon.ico",
+    icon: "/sparrow-logo.svg",
+    shortcut: "/sparrow-logo.svg",
+    apple: "/sparrow-logo.svg",
+  },
+  openGraph: {
+    title: "Sparrow Official — Order Assistant",
+    description: "Place your order easily with Sparrow Official.",
+    images: ["/sparrow-logo.svg"],
   },
 };
 
@@ -39,9 +46,7 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
       >
-        <Suspense>
-          {children}
-        </Suspense>
+        <Suspense>{children}</Suspense>
         <Toaster />
       </body>
     </html>
