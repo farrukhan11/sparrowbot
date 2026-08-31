@@ -1,9 +1,18 @@
 type ProductOptionValue = { name: string; value: string };
+type CartItem = {
+  productName: string;
+  variantId: string;
+  productOptions: ProductOptionValue[];
+  quantity: number;
+  unitPrice: string;
+  lineTotal: string;
+};
 
 type WhatsAppOrder = {
   id: string;
   productName: string;
   productOptions?: ProductOptionValue[] | null;
+  cartItems?: CartItem[] | null;
   color: string | null;
   size: string | null;
   price: string | null;
@@ -35,11 +44,23 @@ function normalizeWhatsAppNumber(value: string | null | undefined): string {
 
 function shortOrderId(id: string): string { return id.slice(0, 8).toUpperCase(); }
 
+function optionsLabel(options?: ProductOptionValue[] | null): string {
+  return (options || []).filter(option => option?.name && option?.value).map(option => `${option.name}: ${option.value}`).join(', ');
+}
+
 function productLabel(order: WhatsAppOrder): string {
-  const genericOptions = (order.productOptions || []).filter(option => option?.name && option?.value).map(option => `${option.name}: ${option.value}`);
-  const legacyOptions = [order.color ? `Color: ${order.color}` : '', order.size ? `Size: ${order.size}` : ''].filter(Boolean);
-  const options = genericOptions.length ? genericOptions : legacyOptions;
-  return options.length ? `${order.productName} (${options.join(', ')})` : order.productName;
+  const genericOptions = optionsLabel(order.productOptions);
+  const legacyOptions = [order.color ? `Color: ${order.color}` : '', order.size ? `Size: ${order.size}` : ''].filter(Boolean).join(', ');
+  const options = genericOptions || legacyOptions;
+  return options ? `${order.productName} (${options})` : order.productName;
+}
+
+function cartLinesLabel(order: WhatsAppOrder): string {
+  if (!order.cartItems?.length) return `${productLabel(order)} × ${order.quantity || '1'}`;
+  return order.cartItems.map((item, index) => {
+    const options = optionsLabel(item.productOptions);
+    return `${index + 1}. ${item.productName}${options ? ` (${options})` : ''} × ${item.quantity} — Rs.${item.lineTotal}`;
+  }).join('\n');
 }
 
 function estimatedDeliveryDate(): string {
@@ -100,10 +121,9 @@ export async function sendOrderWhatsAppNotifications(order: WhatsAppOrder): Prom
   const customerNumber = normalizeWhatsAppNumber(order.customerPhone);
   const ownerNumber = normalizeWhatsAppNumber(process.env.WHATSAPP_ORDER_RECIPIENT);
   const orderId = shortOrderId(order.id);
-  const product = productLabel(order);
+  const cartLines = cartLinesLabel(order);
   const quantity = order.quantity || '1';
-  const unitPrice = order.price ? `Rs.${order.price}` : 'Not specified';
-  const subtotal = order.subtotalPrice ? `Rs.${order.subtotalPrice}` : unitPrice;
+  const subtotal = order.subtotalPrice ? `Rs.${order.subtotalPrice}` : order.price ? `Rs.${order.price}` : 'Not specified';
   const shipping = shippingLabel(order);
   const totalAmount = order.totalPrice ? `Rs.${order.totalPrice}` : subtotal;
   const configuredCustomerTemplate = process.env.WHATSAPP_CUSTOMER_TEMPLATE_NAME?.trim();
@@ -112,26 +132,29 @@ export async function sendOrderWhatsAppNotifications(order: WhatsAppOrder): Prom
   const customerText =
     `Assalam o Alaikum ${order.customerName || 'Ji'}! ✅\n\n` +
     `Aapka Sparrow Official order confirm ho gaya hai.\n` +
-    `Order ID: ${orderId}\nProduct: ${product}\nQuantity: ${quantity}\n` +
-    `${order.price ? `Unit Price: ${unitPrice}\n` : ''}` +
+    `Order ID: ${orderId}\n\n${cartLines}\n\nTotal Qty: ${quantity}\n` +
     `${order.subtotalPrice ? `Subtotal: ${subtotal}\n` : ''}` +
     `${order.shippingPrice != null ? `Shipping: ${shipping}\n` : ''}` +
     `${order.totalPrice ? `Grand Total: ${totalAmount}\n` : ''}` +
     `Delivery City: ${order.customerCity || '-'}\n\nShukriya for shopping with Sparrow Official!`;
 
   const ownerText =
-    `🛍️ NEW ORDER - Sparrow Official\n\nOrder ID: ${orderId}\nProduct: ${product}\nQuantity: ${quantity}\n` +
-    `${order.price ? `Unit Price: ${unitPrice}\n` : ''}${order.subtotalPrice ? `Subtotal: ${subtotal}\n` : ''}` +
+    `🛍️ NEW ORDER - Sparrow Official\n\nOrder ID: ${orderId}\n\n${cartLines}\n\nTotal Qty: ${quantity}\n` +
+    `${order.subtotalPrice ? `Subtotal: ${subtotal}\n` : ''}` +
     `${order.shippingPrice != null ? `Shipping: ${shipping}\n` : ''}${order.totalPrice ? `Grand Total: ${totalAmount}\n` : ''}` +
     `Customer: ${order.customerName || '-'}\nPhone: ${order.customerPhone || '-'}\nCity: ${order.customerCity || '-'}\nAddress: ${order.customerAddress || '-'}\n\nCreated: ${new Date().toLocaleString('en-PK', { timeZone: 'Asia/Karachi' })}`;
+
+  const templateProductSummary = order.cartItems?.length
+    ? order.cartItems.map(item => `${item.productName} ${optionsLabel(item.productOptions)} ×${item.quantity}`).join(' | ').slice(0, 900)
+    : `${productLabel(order)} × ${quantity}`;
 
   const customerTemplateParameters = configuredCustomerTemplate === META_TEST_ORDER_TEMPLATE
     ? [order.customerName || 'Customer', orderId, estimatedDeliveryDate()]
     : configuredCustomerTemplate === SPARROW_ORDER_TEMPLATE
-      ? [order.customerName || 'Customer', orderId, `${product} × ${quantity}`, totalAmount, order.customerCity || '-']
-      : [order.customerName || 'Customer', orderId, `${product} × ${quantity}`, totalAmount];
+      ? [order.customerName || 'Customer', orderId, templateProductSummary, totalAmount, order.customerCity || '-']
+      : [order.customerName || 'Customer', orderId, templateProductSummary, totalAmount];
 
-  const ownerTemplateParameters = [orderId, `${product} × ${quantity}`, order.customerName || '-', order.customerPhone || '-', order.customerCity || '-', order.customerAddress || '-', totalAmount];
+  const ownerTemplateParameters = [orderId, templateProductSummary, order.customerName || '-', order.customerPhone || '-', order.customerCity || '-', order.customerAddress || '-', totalAmount];
 
   const customerPromise = customerNumber
     ? sendTemplateOrText({ to: customerNumber, templateName: configuredCustomerTemplate, templateParameters: customerTemplateParameters, text: customerText })
