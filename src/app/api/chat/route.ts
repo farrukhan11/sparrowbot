@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/lib/db';
+import { db, type CartItemRecord } from '@/lib/db';
 import { callAI, type AIMessage } from '@/lib/ai';
 import { sendOrderWhatsAppNotifications } from '@/lib/whatsapp';
 import { getShopifyShippingQuote, type ShippingQuote } from '@/lib/shopify-shipping';
@@ -18,6 +18,18 @@ type OrderDetails = {
 type DetailField = keyof OrderDetails;
 type DetailIssue = { field: DetailField; reason: string; suggestion?: string };
 type ProductOptionValue = { name: string; value: string };
+type CartItemInput = {
+  productName?: string;
+  productId?: string;
+  productHandle?: string;
+  productUrl?: string;
+  image?: string;
+  variantId?: string;
+  selectedOptions?: ProductOptionValue[];
+  quantity?: number;
+};
+
+type VerifiedCartItem = CartItemRecord;
 
 const VALID_FIELDS: DetailField[] = ['customerName', 'customerPhone', 'customerCity', 'customerAddress'];
 
@@ -45,7 +57,7 @@ function prettyCity(value: string): string {
 
 function normalizePhone(value: unknown): string {
   const digits = String(value || '').replace(/\D/g, '');
-  if (/^92[3]\d{9}$/.test(digits)) return `0${digits.slice(2)}`;
+  if (/^923\d{9}$/.test(digits)) return `0${digits.slice(2)}`;
   if (/^3\d{9}$/.test(digits)) return `0${digits}`;
   return digits;
 }
@@ -66,8 +78,9 @@ function isValidName(value: unknown): boolean {
 
 function isValidPhone(value: unknown): boolean {
   const phone = normalizePhone(value);
-  if (!/^03[0-5]\d{8}$/.test(phone)) return false;
-  const subscriber = phone.slice(3);
+  // Pakistan cellular ranges: 030x-034x plus SCOM 0355.
+  if (!/^03(?:0\d|1\d|2\d|3\d|4\d|55)\d{7}$/.test(phone)) return false;
+  const subscriber = phone.slice(4);
   return new Set(subscriber).size >= 3;
 }
 
@@ -206,60 +219,113 @@ Rules:
 - Answer product questions from live description/options/variants, and website policy questions only from provided live policy text.
 - Never invent fabric, stock, size, price, delivery charge, return policy, or discount.
 - If search results are present, recommend only those results.
-- Customer may ask questions while an order is in progress; answer the question without losing their checkout progress.
-- Cash on Delivery and advance payment are supported only if this is already established by store configuration/context; otherwise say payment options are shown at confirmation.
+- Customer may ask questions while an order is in progress; answer the question without losing checkout progress.
+- If the customer wants multiple colors/sizes of the same product, explain that the cart can add each variation with its own quantity.
 - Keep answers useful and concise, usually 1-4 sentences.
 - Do not collect customer name/phone/city/address yourself. The application handles those fields securely when ordering starts.`;
 }
 
-async function livePricing(productInfo: any, details: OrderDetails, quantity: number): Promise<{ pricing: ShippingQuote; verifiedProductInfo: any }> {
-  const resolved = await resolveLiveVariant(productInfo, quantity);
-  const verifiedProductInfo = {
-    ...productInfo,
-    productName: resolved.product.title,
-    productId: resolved.product.id,
-    productHandle: resolved.product.handle,
-    productUrl: resolved.product.productUrl,
-    image: resolved.product.image || productInfo?.image,
-    variantId: resolved.variant.id,
-    price: resolved.variant.price,
-    available: resolved.variant.available,
-    quantity: resolved.quantity,
+function fallbackCartItem(productInfo: any, quantity: number): CartItemInput {
+  return {
+    productName: productInfo?.productName,
+    productId: productInfo?.productId,
+    productHandle: productInfo?.productHandle,
+    productUrl: productInfo?.productUrl,
+    image: productInfo?.image,
+    variantId: productInfo?.variantId,
+    selectedOptions: normalizeProductOptions(productInfo?.selectedOptions),
+    quantity,
   };
+}
+
+function normalizeCartInput(cartItems: unknown, productInfo: any, quantity: number): CartItemInput[] {
+  const source = Array.isArray(cartItems) && cartItems.length ? cartItems : [fallbackCartItem(productInfo, quantity)];
+  return source.slice(0, 20).map((item: any) => ({
+    productName: normalizeSpaces(item?.productName || productInfo?.productName).slice(0, 200),
+    productId: item?.productId ? String(item.productId).slice(0, 100) : productInfo?.productId,
+    productHandle: normalizeSpaces(item?.productHandle || productInfo?.productHandle).slice(0, 180),
+    productUrl: normalizeSpaces(item?.productUrl || productInfo?.productUrl).slice(0, 1000),
+    image: normalizeSpaces(item?.image || productInfo?.image).slice(0, 1000),
+    variantId: String(item?.variantId || '').replace(/\D/g, ''),
+    selectedOptions: normalizeProductOptions(item?.selectedOptions),
+    quantity: Math.max(1, Math.min(20, Math.floor(Number(item?.quantity) || 1))),
+  }));
+}
+
+async function liveCartPricing(cartItems: CartItemInput[], details: OrderDetails): Promise<{
+  pricing: ShippingQuote;
+  verifiedCartItems: VerifiedCartItem[];
+}> {
+  if (!cartItems.length) throw new Error('Cart empty hai. Kam az kam ek variation add karein.');
+
+  const resolvedLines = await Promise.all(cartItems.map(async item => {
+    const resolved = await resolveLiveVariant(item, item.quantity || 1);
+    const productOptions = resolved.product.options.map((definition, index) => ({
+      name: definition.name,
+      value: resolved.variant.options[index] || '',
+    })).filter(option => option.name && option.value);
+    const unit = Number(resolved.variant.price);
+    const lineTotal = unit * resolved.quantity;
+
+    return {
+      productName: resolved.product.title,
+      productId: resolved.product.id || null,
+      productHandle: resolved.product.handle || null,
+      productUrl: resolved.product.productUrl || null,
+      productImage: resolved.product.image || null,
+      variantId: resolved.variant.id,
+      productOptions,
+      quantity: resolved.quantity,
+      unitPrice: resolved.variant.price,
+      lineTotal: Number.isInteger(lineTotal) ? String(lineTotal) : lineTotal.toFixed(2).replace(/0+$/, '').replace(/\.$/, ''),
+    } satisfies VerifiedCartItem;
+  }));
+
+  const totalQuantity = resolvedLines.reduce((sum, item) => sum + item.quantity, 0);
+  if (totalQuantity > 50) throw new Error('Ek order mein maximum 50 total items allowed hain.');
+
   const pricing = await getShopifyShippingQuote({
-    variantId: resolved.variant.id,
-    productUrl: resolved.product.productUrl,
-    price: resolved.variant.price,
-    quantity: resolved.quantity,
+    productUrl: resolvedLines[0].productUrl || undefined,
+    items: resolvedLines.map(item => ({
+      variantId: item.variantId,
+      price: item.unitPrice,
+      quantity: item.quantity,
+      label: `${item.productName} — ${item.productOptions.map(option => `${option.name}: ${option.value}`).join(' • ')}`,
+    })),
   }, {
     city: details.customerCity,
     address1: details.customerAddress,
   });
-  return { pricing, verifiedProductInfo };
+
+  return { pricing, verifiedCartItems: resolvedLines };
 }
 
-async function saveOrder(sessionId: string, productInfo: any, details: OrderDetails, pricing: ShippingQuote) {
-  const productOptions = normalizeProductOptions(productInfo?.selectedOptions);
-  const color = productOptions.find(option => /colou?r/i.test(option.name))?.value || productInfo?.color || null;
-  const size = productOptions.find(option => /size/i.test(option.name))?.value || productInfo?.size || null;
+async function saveOrder(sessionId: string, cartItems: VerifiedCartItem[], details: OrderDetails, pricing: ShippingQuote) {
+  const first = cartItems[0];
+  const firstOptions = first?.productOptions || [];
+  const color = firstOptions.find(option => /colou?r/i.test(option.name))?.value || null;
+  const size = firstOptions.find(option => /size/i.test(option.name))?.value || null;
+  const totalQuantity = cartItems.reduce((sum, item) => sum + item.quantity, 0);
+
   const order = await db.order.create({
     data: {
       sessionId,
-      productName: normalizeSpaces(productInfo?.productName || 'Unknown Product').slice(0, 200),
-      productId: productInfo?.productId ? String(productInfo.productId).slice(0, 100) : null,
-      productHandle: productInfo?.productHandle ? String(productInfo.productHandle).slice(0, 180) : null,
-      variantId: productInfo?.variantId ? String(productInfo.variantId).slice(0, 100) : null,
-      productUrl: productInfo?.productUrl ? String(productInfo.productUrl).slice(0, 1000) : null,
-      productImage: productInfo?.image ? String(productInfo.image).slice(0, 1000) : null,
-      productOptions,
-      color,
-      size,
-      price: pricing.unitPrice,
+      productName: first?.productName || 'Unknown Product',
+      productId: first?.productId || null,
+      productHandle: first?.productHandle || null,
+      variantId: cartItems.length === 1 ? first?.variantId || null : null,
+      productUrl: first?.productUrl || null,
+      productImage: first?.productImage || null,
+      productOptions: cartItems.length === 1 ? firstOptions : null,
+      cartItems,
+      color: cartItems.length === 1 ? color : null,
+      size: cartItems.length === 1 ? size : null,
+      price: cartItems.length === 1 ? first?.unitPrice || null : null,
       subtotalPrice: pricing.productPrice,
       shippingPrice: pricing.shippingPrice,
       shippingRateName: pricing.shippingRateName,
       totalPrice: pricing.totalPrice,
-      quantity: String(pricing.quantity),
+      quantity: String(totalQuantity),
       customerName: details.customerName,
       customerPhone: details.customerPhone,
       customerCity: details.customerCity,
@@ -277,7 +343,10 @@ async function saveOrder(sessionId: string, productInfo: any, details: OrderDeta
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { action = 'chat', message, sessionId, productInfo = {}, details = {}, field, value, quantity = 1 } = body;
+    const {
+      action = 'chat', message, sessionId, productInfo = {}, details = {}, field, value,
+      quantity = 1, cartItems,
+    } = body;
     if (!sessionId) return NextResponse.json({ error: 'sessionId is required' }, { status: 400 });
 
     if (action === 'validate_field') {
@@ -297,8 +366,9 @@ export async function POST(request: NextRequest) {
       const validation = validateDetails(details);
       if (validation.issues.length) return NextResponse.json({ needsCorrection: true, details: validation.data, issues: validation.issues }, { status: 400 });
       try {
-        const { pricing, verifiedProductInfo } = await livePricing(productInfo, validation.data, quantity);
-        return NextResponse.json({ pricing, verifiedProductInfo });
+        const inputCart = normalizeCartInput(cartItems, productInfo, quantity);
+        const { pricing, verifiedCartItems } = await liveCartPricing(inputCart, validation.data);
+        return NextResponse.json({ pricing, verifiedCartItems });
       } catch (error) {
         const reason = error instanceof Error ? error.message : 'Shipping/pricing verify nahi ho saki.';
         console.error('Order quote failed:', reason);
@@ -310,9 +380,16 @@ export async function POST(request: NextRequest) {
       const validation = validateDetails(details);
       if (validation.issues.length) return NextResponse.json({ needsCorrection: true, details: validation.data, issues: validation.issues }, { status: 400 });
       try {
-        const { pricing, verifiedProductInfo } = await livePricing(productInfo, validation.data, quantity);
-        const order = await saveOrder(sessionId, verifiedProductInfo, validation.data, pricing);
-        return NextResponse.json({ orderComplete: true, reply: 'Shukriya! Aapka order successfully confirm ho gaya hai.', order, pricing });
+        const inputCart = normalizeCartInput(cartItems, productInfo, quantity);
+        const { pricing, verifiedCartItems } = await liveCartPricing(inputCart, validation.data);
+        const order = await saveOrder(sessionId, verifiedCartItems, validation.data, pricing);
+        return NextResponse.json({
+          orderComplete: true,
+          reply: 'Shukriya! Aapka order successfully confirm ho gaya hai.',
+          order,
+          pricing,
+          verifiedCartItems,
+        });
       } catch (error) {
         const reason = error instanceof Error ? error.message : 'Order final verify nahi ho saka.';
         return NextResponse.json({ pricingUnavailable: true, reason }, { status: 409 });
