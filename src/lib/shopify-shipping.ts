@@ -1,13 +1,29 @@
+type ShippingLineInput = {
+  variantId: string;
+  price: string;
+  quantity: number;
+  label?: string;
+};
+
 type ShippingProductInfo = {
   variantId?: string;
   productUrl?: string;
   price?: string;
   quantity?: number;
+  items?: ShippingLineInput[];
 };
 
 type ShippingAddress = {
   city: string;
   address1?: string;
+};
+
+export type ShippingQuoteLine = {
+  variantId: string;
+  label?: string;
+  unitPrice: string;
+  quantity: number;
+  lineTotal: string;
 };
 
 export type ShippingQuote = {
@@ -18,6 +34,7 @@ export type ShippingQuote = {
   totalPrice: string;
   shippingRateName: string;
   currency: string;
+  lines?: ShippingQuoteLine[];
 };
 
 type ShopifyShippingRate = {
@@ -143,27 +160,47 @@ async function fetchRatesOnce(origin: string, cookie: string, params: URLSearchP
 }
 
 async function fetchRates(origin: string, cookie: string, address: ShippingAddress): Promise<ShopifyShippingRate[]> {
-  const attempts = [
-    buildShippingParams(address, true),
-    buildShippingParams(address, false),
-  ];
-
+  const attempts = [buildShippingParams(address, true), buildShippingParams(address, false)];
   for (const params of attempts) {
     const rates = await fetchRatesOnce(origin, cookie, params);
     if (rates.length > 0) return rates;
   }
-
   return [];
 }
 
+function normalizeLines(productInfo: ShippingProductInfo): ShippingQuoteLine[] {
+  const source = Array.isArray(productInfo.items) && productInfo.items.length
+    ? productInfo.items
+    : [{
+        variantId: String(productInfo.variantId || ''),
+        price: String(productInfo.price || ''),
+        quantity: Number(productInfo.quantity) || 1,
+      }];
+
+  const lines: ShippingQuoteLine[] = [];
+  for (const item of source.slice(0, 20)) {
+    const variantId = String(item.variantId || '').replace(/\D/g, '');
+    const unitPrice = parseMoney(item.price);
+    const quantity = Math.max(1, Math.min(20, Math.floor(Number(item.quantity) || 1)));
+    if (!variantId) throw new Error('Selected Shopify variant missing hai. Size/Color dobara select karein.');
+    if (unitPrice === null) throw new Error('Live product price verify nahi ho saki.');
+    lines.push({
+      variantId,
+      label: item.label,
+      unitPrice: money(unitPrice),
+      quantity,
+      lineTotal: money(unitPrice * quantity),
+    });
+  }
+
+  if (!lines.length) throw new Error('Order mein koi product variation nahi hai.');
+  const totalQuantity = lines.reduce((sum, line) => sum + line.quantity, 0);
+  if (totalQuantity > 50) throw new Error('Ek order mein maximum 50 total items allowed hain.');
+  return lines;
+}
+
 export async function getShopifyShippingQuote(productInfo: ShippingProductInfo, address: ShippingAddress): Promise<ShippingQuote> {
-  const variantId = String(productInfo.variantId || '').replace(/\D/g, '');
-  const unitPrice = parseMoney(productInfo.price);
-  const quantity = Math.max(1, Math.min(20, Math.floor(Number(productInfo.quantity) || 1)));
-
-  if (!variantId) throw new Error('Selected Shopify variant missing hai. Size/Color dobara select karein.');
-  if (unitPrice === null) throw new Error('Live product price verify nahi ho saki.');
-
+  const lines = normalizeLines(productInfo);
   const origin = resolveStoreOrigin(productInfo);
   const addResponse = await fetch(`${origin}/cart/add.js`, {
     method: 'POST',
@@ -173,7 +210,9 @@ export async function getShopifyShippingQuote(productInfo: ShippingProductInfo, 
       'X-Requested-With': 'XMLHttpRequest',
       Referer: productInfo.productUrl || origin,
     },
-    body: JSON.stringify({ items: [{ id: Number(variantId), quantity }] }),
+    body: JSON.stringify({
+      items: lines.map(line => ({ id: Number(line.variantId), quantity: line.quantity })),
+    }),
     cache: 'no-store',
   });
 
@@ -196,16 +235,18 @@ export async function getShopifyShippingQuote(productInfo: ShippingProductInfo, 
     throw new Error('Shopify ne is address ke liye shipping rate return nahi ki. Ye city validation error nahi hai.');
   }
 
-  const subtotal = unitPrice * quantity;
+  const subtotal = lines.reduce((sum, line) => sum + Number(line.lineTotal), 0);
+  const totalQuantity = lines.reduce((sum, line) => sum + line.quantity, 0);
   const shippingPrice = selected.numericPrice;
 
   return {
-    unitPrice: money(unitPrice),
-    quantity,
+    unitPrice: lines.length === 1 ? lines[0].unitPrice : '',
+    quantity: totalQuantity,
     productPrice: money(subtotal),
     shippingPrice: money(shippingPrice),
     totalPrice: money(subtotal + shippingPrice),
     shippingRateName: selected.presentment_name || selected.name || (shippingPrice === 0 ? 'Free Shipping' : 'Shipping'),
     currency: selected.currency || 'PKR',
+    lines,
   };
 }
