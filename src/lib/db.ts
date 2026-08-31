@@ -18,6 +18,7 @@ type OrderRecord = {
   color: string | null;
   size: string | null;
   price: string | null;
+  subtotalPrice: string | null;
   shippingPrice: string | null;
   shippingRateName: string | null;
   totalPrice: string | null;
@@ -32,82 +33,40 @@ type OrderRecord = {
   updatedAt: Date;
 };
 
-type OrderDocument = Omit<OrderRecord, 'id'> & {
-  _id: ObjectId;
-};
+type OrderDocument = Omit<OrderRecord, 'id'> & { _id: ObjectId };
 
-type CreateOrderData = Partial<
-  Pick<
-    OrderRecord,
-    | 'productId'
-    | 'productHandle'
-    | 'variantId'
-    | 'productUrl'
-    | 'productImage'
-    | 'productOptions'
-    | 'color'
-    | 'size'
-    | 'price'
-    | 'shippingPrice'
-    | 'shippingRateName'
-    | 'totalPrice'
-    | 'quantity'
-    | 'customerName'
-    | 'customerPhone'
-    | 'customerCity'
-    | 'customerAddress'
-    | 'status'
-  >
-> &
-  Pick<OrderRecord, 'sessionId' | 'productName' | 'chatHistory'>;
+type CreateOrderData = Partial<Pick<OrderRecord,
+  | 'productId' | 'productHandle' | 'variantId' | 'productUrl' | 'productImage'
+  | 'productOptions' | 'color' | 'size' | 'price' | 'subtotalPrice'
+  | 'shippingPrice' | 'shippingRateName' | 'totalPrice' | 'quantity'
+  | 'customerName' | 'customerPhone' | 'customerCity' | 'customerAddress' | 'status'
+>> & Pick<OrderRecord, 'sessionId' | 'productName' | 'chatHistory'>;
 
-const globalForMongo = globalThis as unknown as {
-  mongoClientPromise?: Promise<MongoClient>;
-};
+const globalForMongo = globalThis as unknown as { mongoClientPromise?: Promise<MongoClient> };
 
 function getMongoUri(): string {
   const databaseUrl = process.env.DATABASE_URL?.trim() || '';
-  const uri =
-    process.env.MONGODB_URI?.trim() ||
-    process.env.MONGODB_URL?.trim() ||
-    (databaseUrl.startsWith('mongodb://') || databaseUrl.startsWith('mongodb+srv://')
-      ? databaseUrl
-      : '');
-
-  if (!uri) {
-    throw new Error(
-      'MongoDB is not configured. Add MONGODB_URI to your environment variables.'
-    );
-  }
-
+  const uri = process.env.MONGODB_URI?.trim() || process.env.MONGODB_URL?.trim() ||
+    (databaseUrl.startsWith('mongodb://') || databaseUrl.startsWith('mongodb+srv://') ? databaseUrl : '');
+  if (!uri) throw new Error('MongoDB is not configured. Add MONGODB_URI to your environment variables.');
   return uri;
 }
 
 async function getMongoClient(): Promise<MongoClient> {
   if (!globalForMongo.mongoClientPromise) {
-    const client = new MongoClient(getMongoUri(), {
-      serverSelectionTimeoutMS: 10000,
-      connectTimeoutMS: 10000,
-    });
-
+    const client = new MongoClient(getMongoUri(), { serverSelectionTimeoutMS: 10000, connectTimeoutMS: 10000 });
     globalForMongo.mongoClientPromise = client.connect().catch(error => {
       globalForMongo.mongoClientPromise = undefined;
       throw error;
     });
   }
-
   return globalForMongo.mongoClientPromise;
 }
 
 async function getOrdersCollection(): Promise<Collection<OrderDocument>> {
   const client = await getMongoClient();
-  const configuredDbName =
-    process.env.MONGODB_DB?.trim() || process.env.MONGODB_DB_NAME?.trim();
-
-  if (configuredDbName) {
-    return client.db(configuredDbName).collection<OrderDocument>('orders');
-  }
-
+  const configuredDbName = process.env.MONGODB_DB?.trim() || process.env.MONGODB_DB_NAME?.trim();
+  if (configuredDbName) return client.db(configuredDbName).collection<OrderDocument>('orders');
   const defaultDb = client.db();
   const db = defaultDb.databaseName === 'test' ? client.db('sparrowbot') : defaultDb;
   return db.collection<OrderDocument>('orders');
@@ -124,6 +83,7 @@ function serializeOrder(document: OrderDocument): OrderRecord {
     productUrl: order.productUrl ?? null,
     productImage: order.productImage ?? null,
     productOptions: order.productOptions ?? null,
+    subtotalPrice: order.subtotalPrice ?? null,
     shippingPrice: order.shippingPrice ?? null,
     shippingRateName: order.shippingRateName ?? null,
     totalPrice: order.totalPrice ?? null,
@@ -135,7 +95,6 @@ export const db = {
     async create({ data }: { data: CreateOrderData }): Promise<OrderRecord> {
       const collection = await getOrdersCollection();
       const now = new Date();
-
       const document: Omit<OrderDocument, '_id'> = {
         sessionId: data.sessionId,
         productName: data.productName,
@@ -148,6 +107,7 @@ export const db = {
         color: data.color ?? null,
         size: data.size ?? null,
         price: data.price ?? null,
+        subtotalPrice: data.subtotalPrice ?? null,
         shippingPrice: data.shippingPrice ?? null,
         shippingRateName: data.shippingRateName ?? null,
         totalPrice: data.totalPrice ?? null,
@@ -161,62 +121,27 @@ export const db = {
         createdAt: now,
         updatedAt: now,
       };
-
       const result = await collection.insertOne(document as OrderDocument);
-
-      return serializeOrder({
-        _id: result.insertedId,
-        ...document,
-      });
+      return serializeOrder({ _id: result.insertedId, ...document });
     },
 
-    async findMany({
-      where,
-      take = 5,
-    }: {
+    async findMany({ where, take = 5 }: {
       where: { sessionId: string };
       orderBy?: { createdAt: 'asc' | 'desc' };
       take?: number;
     }): Promise<OrderRecord[]> {
       const collection = await getOrdersCollection();
-      const documents = await collection
-        .find({ sessionId: where.sessionId })
-        .sort({ createdAt: -1 })
-        .limit(take)
-        .toArray();
-
+      const documents = await collection.find({ sessionId: where.sessionId }).sort({ createdAt: -1 }).limit(take).toArray();
       return documents.map(serializeOrder);
     },
 
-    async update({
-      where,
-      data,
-    }: {
-      where: { id: string };
-      data: { status: string };
-    }): Promise<OrderRecord> {
-      if (!ObjectId.isValid(where.id)) {
-        throw new Error('Invalid order ID');
-      }
-
+    async update({ where, data }: { where: { id: string }; data: { status: string } }): Promise<OrderRecord> {
+      if (!ObjectId.isValid(where.id)) throw new Error('Invalid order ID');
       const collection = await getOrdersCollection();
       const _id = new ObjectId(where.id);
-
-      await collection.updateOne(
-        { _id },
-        {
-          $set: {
-            status: data.status,
-            updatedAt: new Date(),
-          },
-        }
-      );
-
+      await collection.updateOne({ _id }, { $set: { status: data.status, updatedAt: new Date() } });
       const document = await collection.findOne({ _id });
-      if (!document) {
-        throw new Error('Order not found');
-      }
-
+      if (!document) throw new Error('Order not found');
       return serializeOrder(document);
     },
   },
