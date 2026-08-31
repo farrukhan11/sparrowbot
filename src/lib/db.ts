@@ -5,6 +5,19 @@ type ProductOptionValue = {
   value: string;
 };
 
+export type CartItemRecord = {
+  productName: string;
+  productId: string | null;
+  productHandle: string | null;
+  productUrl: string | null;
+  productImage: string | null;
+  variantId: string;
+  productOptions: ProductOptionValue[];
+  quantity: number;
+  unitPrice: string;
+  lineTotal: string;
+};
+
 type OrderRecord = {
   id: string;
   sessionId: string;
@@ -15,6 +28,7 @@ type OrderRecord = {
   productUrl: string | null;
   productImage: string | null;
   productOptions: ProductOptionValue[] | null;
+  cartItems: CartItemRecord[] | null;
   color: string | null;
   size: string | null;
   price: string | null;
@@ -37,7 +51,7 @@ type OrderDocument = Omit<OrderRecord, 'id'> & { _id: ObjectId };
 
 type CreateOrderData = Partial<Pick<OrderRecord,
   | 'productId' | 'productHandle' | 'variantId' | 'productUrl' | 'productImage'
-  | 'productOptions' | 'color' | 'size' | 'price' | 'subtotalPrice'
+  | 'productOptions' | 'cartItems' | 'color' | 'size' | 'price' | 'subtotalPrice'
   | 'shippingPrice' | 'shippingRateName' | 'totalPrice' | 'quantity'
   | 'customerName' | 'customerPhone' | 'customerCity' | 'customerAddress' | 'status'
 >> & Pick<OrderRecord, 'sessionId' | 'productName' | 'chatHistory'>;
@@ -83,6 +97,7 @@ function serializeOrder(document: OrderDocument): OrderRecord {
     productUrl: order.productUrl ?? null,
     productImage: order.productImage ?? null,
     productOptions: order.productOptions ?? null,
+    cartItems: order.cartItems ?? null,
     subtotalPrice: order.subtotalPrice ?? null,
     shippingPrice: order.shippingPrice ?? null,
     shippingRateName: order.shippingRateName ?? null,
@@ -104,6 +119,7 @@ export const db = {
         productUrl: data.productUrl ?? null,
         productImage: data.productImage ?? null,
         productOptions: data.productOptions ?? null,
+        cartItems: data.cartItems ?? null,
         color: data.color ?? null,
         size: data.size ?? null,
         price: data.price ?? null,
